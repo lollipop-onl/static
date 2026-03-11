@@ -1,0 +1,407 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { BookOpen, PenTool, CheckCircle, RefreshCw, AlertTriangle, Send, ChevronRight, MessageSquare, Info } from 'lucide-react';
+
+export default function App() {
+  const [aiStatus, setAiStatus] = useState('checking'); // 'checking', 'downloading', 'ready', 'unsupported'
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [appState, setAppState] = useState('generating'); // 'generating', 'answering', 'grading', 'feedback'
+  const [question, setQuestion] = useState('');
+  const [userAnswer, setUserAnswer] = useState('');
+  const [feedback, setFeedback] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isMockMode, setIsMockMode] = useState(false);
+  
+  // Gemini Nanoのセッションを保持するRef
+  const generatorSession = useRef(null);
+  const graderSession = useRef(null);
+
+  // 初期化：AI機能のチェックとセッション作成
+  useEffect(() => {
+    const initAI = async () => {
+      try {
+        // 最新の window.LanguageModel と、従来の window.ai.languageModel の両方に対応
+        const LM = window.LanguageModel || (window.ai && window.ai.languageModel);
+        if (!LM) {
+          setAiStatus('unsupported');
+          return;
+        }
+
+        let isAvailable = 'no';
+        let needsDownload = false;
+
+        // 最新API: availability() を使用
+        if (typeof LM.availability === 'function') {
+          isAvailable = await LM.availability();
+          if (isAvailable === 'no') {
+            setAiStatus('unsupported');
+            return;
+          }
+          if (isAvailable !== 'available') {
+            needsDownload = true;
+          }
+        } 
+        // 従来API: capabilities() を使用（フォールバック）
+        else if (typeof LM.capabilities === 'function') {
+          const cap = await LM.capabilities();
+          isAvailable = cap.available;
+          if (isAvailable === 'no') {
+            setAiStatus('unsupported');
+            return;
+          }
+          if (isAvailable !== 'readily') {
+            needsDownload = true;
+          }
+        } else {
+          setAiStatus('unsupported');
+          return;
+        }
+
+        // モデルがダウンロード待ち状態の場合はステータスを変更
+        if (needsDownload) {
+          setAiStatus('downloading');
+        }
+
+        // 役割ごとにプロンプトを分けたセッションを作成
+        generatorSession.current = await LM.create({
+          systemPrompt: "あなたは英語学習アプリの出題者です。ユーザーの翻訳練習になるような、短くて自然な日本語の日常会話の文を「1つだけ」出力してください。余計な説明や英語の解答は絶対に含めず、日本語の文のみを出力してください。",
+          monitor(m) {
+            m.addEventListener('downloadprogress', (e) => {
+              if (e.total > 0) {
+                setDownloadProgress(Math.round((e.loaded / e.total) * 100));
+              }
+            });
+          }
+        });
+
+        // 1つ目のセッション作成時にダウンロードが完了しているはずなので、そのまま2つ目を作成
+        graderSession.current = await LM.create({
+          systemPrompt: "あなたは親切な英語の先生です。ユーザーが入力した英語の翻訳を採点し、日本語で丁寧にフィードバック（赤ペン指導）を行ってください。"
+        });
+
+        setAiStatus('ready');
+        generateNextQuestion();
+
+      } catch (error) {
+        console.error("AI Initialization Error:", error);
+        const errMsg = error.message || String(error);
+        
+        // iframeのPermission Policy等でブロックされた場合はモックモードへ移行
+        if (errMsg.includes('Permission Policy') || errMsg.includes('Access denied')) {
+          setIsMockMode(true);
+          setAiStatus('ready');
+          
+          // ダミーの出題セッション
+          generatorSession.current = {
+            prompt: async () => {
+              await new Promise(resolve => setTimeout(resolve, 800)); // AIの思考時間をシミュレート
+              const dummyQuestions = [
+                "明日は晴れるといいな。",
+                "私の趣味は写真を撮ることです。",
+                "駅まで歩いて10分かかります。",
+                "彼は英語を話すのがとても上手です。"
+              ];
+              return dummyQuestions[Math.floor(Math.random() * dummyQuestions.length)];
+            }
+          };
+
+          // ダミーの採点セッション
+          graderSession.current = {
+            prompt: async () => {
+              await new Promise(resolve => setTimeout(resolve, 1500)); // AIの思考時間をシミュレート
+              return `評価: Good
+模範解答: (Mock Answer) I hope it will be sunny tomorrow.
+解説: 【※これはモックモードの自動応答です】
+プレビュー環境のセキュリティ制限により、Gemini Nanoにアクセスできませんでした。アプリのUIや画面遷移を確認するためのダミーフィードバックを表示しています。実際にAIを動かすには、コードをローカル環境で実行してください。`;
+            }
+          };
+          
+          generateNextQuestion();
+        } else {
+          setAiStatus('unsupported');
+          setErrorMsg(errMsg);
+        }
+      }
+    };
+
+    initAI();
+  }, []);
+
+  // 問題を生成する
+  const generateNextQuestion = async () => {
+    setAppState('generating');
+    setUserAnswer('');
+    setFeedback(null);
+    setErrorMsg('');
+
+    try {
+      const prompt = "英語の翻訳練習になる短い日本語の文を1つ出力してください。例：「昨日はとても寒かったです。」「私は週末に映画を見るのが好きです。」 出力は文のみにしてください。";
+      let generatedText = await generatorSession.current.prompt(prompt);
+      
+      // 余分な記号や空白を取り除く
+      generatedText = generatedText.replace(/['"]/g, '').trim();
+      setQuestion(generatedText);
+      setAppState('answering');
+    } catch (error) {
+      console.error("Question Generation Error:", error);
+      setErrorMsg('問題の生成中にエラーが発生しました。もう一度お試しください。');
+      setAppState('answering');
+    }
+  };
+
+  // ユーザーの回答を採点する
+  const submitAnswer = async () => {
+    if (!userAnswer.trim()) return;
+    
+    setAppState('grading');
+    setErrorMsg('');
+
+    try {
+      const prompt = `
+以下の【お題】の日本語の文に対する、【生徒の回答】の英語翻訳を採点し、フィードバックを行ってください。
+
+【お題】: ${question}
+【生徒の回答】: ${userAnswer}
+
+以下の形式で厳密に出力してください。
+評価: (Perfect, Good, Needs Improvement のいずれか)
+模範解答: (より自然で正確な英語の翻訳例)
+解説: (生徒の回答の良かった点、文法の修正点、模範解答の解説などを日本語で短く丁寧に)
+`;
+
+      const aiFeedback = await graderSession.current.prompt(prompt);
+      
+      // AIの出力をパースする
+      const parsedFeedback = {
+        evaluation: aiFeedback.match(/評価:\s*(.*)/)?.[1] || 'Good',
+        modelAnswer: aiFeedback.match(/模範解答:\s*(.*)/)?.[1] || '(模範解答を取得できませんでした)',
+        explanation: aiFeedback.match(/解説:\s*([\s\S]*)/)?.[1] || aiFeedback,
+        raw: aiFeedback
+      };
+
+      setFeedback(parsedFeedback);
+      setAppState('feedback');
+    } catch (error) {
+      console.error("Grading Error:", error);
+      setErrorMsg('採点中にエラーが発生しました。');
+      setAppState('answering');
+    }
+  };
+
+  // 画面出し分け
+  if (aiStatus === 'checking') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="text-center text-slate-500 flex flex-col items-center">
+          <RefreshCw className="w-8 h-8 animate-spin mb-4 text-blue-500" />
+          <p>Chrome Built-in AI (Gemini Nano) を確認しています...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (aiStatus === 'downloading') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border border-blue-100">
+          <RefreshCw className="w-12 h-12 animate-spin mb-4 text-blue-500 mx-auto" />
+          <h1 className="text-xl font-bold text-slate-800 mb-2">AIモデルを準備中...</h1>
+          <p className="text-sm text-slate-600 mb-6">
+            初回のみ、ブラウザにGemini Nanoのモデルをダウンロードしています。<br/>
+            ファイルサイズが大きいため数分かかる場合があります。
+          </p>
+          <div className="w-full bg-slate-200 rounded-full h-2.5 mb-2 overflow-hidden">
+            <div className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" style={{ width: `${downloadProgress}%` }}></div>
+          </div>
+          <p className="text-xs text-slate-500 font-medium">{downloadProgress}% 完了</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (aiStatus === 'unsupported') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border border-red-100">
+          <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h1 className="text-xl font-bold text-slate-800 mb-2">Built-in AIが利用できません</h1>
+          <div className="text-sm text-slate-600 mb-2 text-left">
+            <p>
+              このアプリはクライアントサイドのBuilt-in AI (Gemini Nano) を利用します。<br/>
+              最新のGoogle Chromeで <code>chrome://flags</code> を開き、以下を有効にしてください：
+            </p>
+            <ul className="list-disc list-inside mt-2 font-mono text-xs bg-slate-100 p-2 rounded">
+              <li>Prompt API for Gemini Nano</li>
+              <li>Enables optimization guide on device</li>
+            </ul>
+          </div>
+          
+          {errorMsg && (
+            <div className="mt-4 p-4 bg-red-50 text-red-800 rounded-xl text-xs text-left border border-red-200 shadow-inner">
+              <div className="flex items-center mb-2 font-bold text-red-600">
+                <AlertTriangle className="w-4 h-4 mr-1 flex-shrink-0" />
+                エラー詳細:
+              </div>
+              <p className="font-mono break-words bg-white p-2 rounded border border-red-100">{errorMsg}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center py-12 p-4 font-sans text-slate-800">
+      <div className="max-w-2xl w-full">
+        {/* モックモード警告バナー */}
+        {isMockMode && (
+          <div className="mb-6 bg-orange-100 border-l-4 border-orange-500 text-orange-800 p-4 rounded-r-xl shadow-sm text-sm">
+            <p className="font-bold flex items-center mb-1">
+              <Info className="w-4 h-4 mr-2" />
+              UIプレビュー用のモック（デモ）モードで動作中
+            </p>
+            <p className="leading-relaxed text-orange-700">
+              現在の環境（iframe）ではブラウザのセキュリティ制限によりAI機能がブロックされています。現在はアプリの操作感を試すための<strong>ダミーデータ</strong>で動作しています。実際にGemini Nanoを動かすには、ローカル環境で実行してください。
+            </p>
+          </div>
+        )}
+
+        {/* ヘッダー */}
+        <header className="flex items-center justify-between mb-8 px-2">
+          <div className="flex items-center space-x-3">
+            <div className="bg-blue-600 p-2 rounded-xl text-white">
+              <BookOpen className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-800 tracking-tight">AI 瞬間英作文</h1>
+              <p className="text-xs text-slate-500">Powered by On-Device Gemini Nano</p>
+            </div>
+          </div>
+        </header>
+
+        {/* メインカード */}
+        <main className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden transition-all duration-300">
+          {/* 問題セクション */}
+          <div className="p-8 border-b border-slate-100 bg-blue-50/30">
+            <div className="flex items-center text-blue-600 mb-3 text-sm font-semibold">
+              <MessageSquare className="w-4 h-4 mr-2" />
+              <span>日本語のお題</span>
+            </div>
+            {appState === 'generating' ? (
+              <div className="flex items-center space-x-3 text-slate-400 py-4 text-lg">
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                <span>AIが新しい問題を作っています...</span>
+              </div>
+            ) : (
+              <h2 className="text-2xl font-bold text-slate-800 leading-relaxed">
+                {question}
+              </h2>
+            )}
+          </div>
+
+          {/* 回答・フィードバックセクション */}
+          <div className="p-8">
+            {appState !== 'feedback' ? (
+              // 回答入力フォーム
+              <div className="space-y-4">
+                <label htmlFor="answer" className="block text-sm font-semibold text-slate-600 flex items-center">
+                  <PenTool className="w-4 h-4 mr-2" />
+                  英語に翻訳してみましょう
+                </label>
+                <textarea
+                  id="answer"
+                  value={userAnswer}
+                  onChange={(e) => setUserAnswer(e.target.value)}
+                  disabled={appState === 'generating' || appState === 'grading'}
+                  placeholder="Type your English translation here..."
+                  className="w-full p-4 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 resize-none h-32 text-lg"
+                />
+                
+                {errorMsg && <p className="text-red-500 text-sm flex items-center"><AlertTriangle className="w-4 h-4 mr-1"/>{errorMsg}</p>}
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    onClick={submitAnswer}
+                    disabled={!userAnswer.trim() || appState !== 'answering'}
+                    className={`flex items-center px-6 py-3 rounded-xl font-semibold text-white transition-all duration-200 shadow-sm
+                      ${!userAnswer.trim() || appState !== 'answering' 
+                        ? 'bg-slate-300 cursor-not-allowed' 
+                        : 'bg-blue-600 hover:bg-blue-700 hover:shadow-md active:scale-95'}`}
+                  >
+                    {appState === 'grading' ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 mr-2 animate-spin" />
+                        AI先生が採点中...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-5 h-5 mr-2" />
+                        回答を提出
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              // AIの赤ペン指導（フィードバック）表示
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {/* ユーザーの回答 */}
+                <div className="bg-slate-50 rounded-xl p-5 border border-slate-100">
+                  <div className="text-xs text-slate-500 font-semibold mb-1 uppercase tracking-wider">Your Answer</div>
+                  <div className="text-lg text-slate-800">{userAnswer}</div>
+                </div>
+
+                {/* 赤ペン評価 */}
+                <div className="relative bg-red-50 rounded-2xl p-6 border border-red-100 shadow-inner">
+                  {/* 赤ペン風のバッジ */}
+                  <div className="absolute -top-3 -right-3 transform rotate-12">
+                     <span className={`inline-block px-4 py-1 rounded-full text-sm font-bold border-2 shadow-sm
+                       ${feedback.evaluation.toLowerCase().includes('perfect') ? 'bg-white text-red-500 border-red-500' : 
+                         feedback.evaluation.toLowerCase().includes('good') ? 'bg-white text-orange-500 border-orange-500' : 
+                         'bg-white text-blue-500 border-blue-500'}`}>
+                       {feedback.evaluation}
+                     </span>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-xs text-red-400 font-bold mb-1 flex items-center">
+                        <CheckCircle className="w-4 h-4 mr-1" />
+                        模範解答 (Model Answer)
+                      </div>
+                      <div className="text-xl font-bold text-red-600 font-serif">
+                        {feedback.modelAnswer}
+                      </div>
+                    </div>
+
+                    <div className="w-full h-px bg-red-200/50"></div>
+
+                    <div>
+                      <div className="text-xs text-red-400 font-bold mb-2 flex items-center">
+                        <PenTool className="w-4 h-4 mr-1" />
+                        AI先生の解説
+                      </div>
+                      <p className="text-red-900 leading-relaxed text-sm whitespace-pre-wrap">
+                        {feedback.explanation}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 次の問題へボタン */}
+                <div className="flex justify-center pt-4">
+                  <button
+                    onClick={generateNextQuestion}
+                    className="flex items-center px-8 py-4 bg-slate-800 text-white rounded-full font-bold hover:bg-slate-900 transition-colors duration-200 shadow-lg hover:shadow-xl active:scale-95 group"
+                  >
+                    次の問題へ
+                    <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
