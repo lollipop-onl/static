@@ -46,7 +46,16 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
     import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-    import { BookOpen, PenTool, CheckCircle, RefreshCw, AlertTriangle, Send, ChevronRight, MessageSquare, Info, Flame } from 'https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0';
+    import { BookOpen, PenTool, CheckCircle, RefreshCw, AlertTriangle, Send, ChevronRight, MessageSquare, Info, Flame, Settings2 } from 'https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0';
+
+    // 出題テーマの定義
+    const TOPICS = [
+      { id: 'daily', label: '日常会話', desc: '普段の生活で使うカジュアルな表現' },
+      { id: 'business', label: 'ビジネス英語', desc: 'オフィス、会議、メールで使うフォーマルな表現' },
+      { id: 'tech', label: 'IT・コードレビュー', desc: 'エンジニア同士の技術的な会話やコードレビューのコメント' },
+      { id: 'travel', label: '海外旅行', desc: '旅行先のホテル、空港、レストランでの会話' },
+      { id: 'romance', label: '恋愛・ドラマ', desc: '映画やドラマに出てくるような少し感情的な表現' }
+    ];
 
     // カラーテーマの定義（Tailwind CDNがパースできるように完全なクラス名を記述）
     const COLOR_THEMES = {
@@ -73,6 +82,11 @@
       const [streakCount, setStreakCount] = useState(0);
       const [levelUpAnim, setLevelUpAnim] = useState(false);
       
+      // 選択中の出題テーマ
+      const [selectedTopic, setSelectedTopic] = useState('daily');
+      // 出題時に実際に使用されたテーマ（UIのラグ防止のため保持）
+      const [activeTopicLabel, setActiveTopicLabel] = useState('');
+
       const generatorSession = useRef(null);
       const graderSession = useRef(null);
       const textareaRef = useRef(null);
@@ -80,12 +94,12 @@
       // レベル情報を取得する関数
       const getLevelInfo = (count) => {
         if (count >= 12) return { name: "悪魔レベル (ネイティブ級)", emoji: "👿", color: "slate", prompt: "ネイティブスピーカーが使うような高度な慣用句や複雑なニュアンスを含む、非常に難解で洗練された文" };
-        if (count >= 10) return { name: "TOEIC 800点レベル", emoji: "💀", color: "purple", prompt: "ビジネスシーンで使われるフォーマルで複雑な文、または専門的な内容を含む文" };
+        if (count >= 10) return { name: "TOEIC 800点レベル", emoji: "💀", color: "purple", prompt: "フォーマルで複雑な文、または専門的な内容を含む文" };
         if (count >= 8) return { name: "大学受験・英検2級レベル", emoji: "⚡", color: "red", prompt: "抽象的な概念や仮定法、倒置などの複雑な文法を含む長めの文" };
-        if (count >= 6) return { name: "高校基礎・英検準2級レベル", emoji: "🔥", color: "orange", prompt: "関係副詞や比較表現などを含む、少し複雑な日常会話や説明文" };
+        if (count >= 6) return { name: "高校基礎・英検準2級レベル", emoji: "🔥", color: "orange", prompt: "関係副詞や比較表現などを含む、少し複雑な文" };
         if (count >= 4) return { name: "中3・英検3級レベル", emoji: "📘", color: "blue", prompt: "関係代名詞や現在完了を使った、少し長めの基本的な文" };
         if (count >= 2) return { name: "中2レベル", emoji: "🌿", color: "teal", prompt: "過去形や未来形、不定詞や動名詞を使った簡単な会話" };
-        return { name: "中1・英検5級レベル", emoji: "🌱", color: "green", prompt: "中学1年生レベルの非常に簡単で短い挨拶や日常会話。be動詞や一般動詞の現在形のみ。" };
+        return { name: "中1・英検5級レベル", emoji: "🌱", color: "green", prompt: "中学1年生レベルの非常に簡単で短い挨拶や日常の文。be動詞や一般動詞の現在形のみ。" };
       };
 
       const currentLevel = getLevelInfo(correctCount);
@@ -115,8 +129,9 @@
 
             if (needsDownload) setAiStatus('downloading');
 
+            // 出題用セッション（システムプロンプトは汎用的なものにしておき、ユーザープロンプトで条件を付与する）
             generatorSession.current = await LM.create({
-              systemPrompt: "あなたは英語学習アプリの出題者です。指定されたレベルに合わせた日本語の文を「1つだけ」出力してください。余計な説明や英語の解答は絶対に含めず、日本語の文のみを出力してください。",
+              systemPrompt: "あなたは英語学習アプリの出題者です。指定されたレベルとテーマに合わせた自然な日本語の文を「1つだけ」出力してください。余計な説明や英語の解答は絶対に含めず、日本語の文のみを出力してください。",
               monitor(m) {
                 m.addEventListener('downloadprogress', (e) => {
                   if (e.total > 0) setDownloadProgress(Math.round((e.loaded / e.total) * 100));
@@ -129,7 +144,7 @@
             });
 
             setAiStatus('ready');
-            generateNextQuestion(0);
+            generateNextQuestion(0, 'daily');
 
           } catch (error) {
             console.error("AI Initialization Error:", error);
@@ -142,12 +157,11 @@
               generatorSession.current = {
                 prompt: async (p) => {
                   await new Promise(resolve => setTimeout(resolve, 800));
+                  // モック時の適当な出し分け
+                  if (p.includes("IT・コードレビュー")) return "この関数のパフォーマンスを改善するために、キャッシュを導入すべきだと思います。";
+                  if (p.includes("ビジネス")) return "明日の15時までに、会議の議事録を共有していただけますか？";
                   if (p.includes("ネイティブ級")) return "彼がその計画に難色を示したのも無理はない、そもそも最初から破綻していたのだから。";
-                  if (p.includes("TOEIC 800点")) return "プロジェクトの遅延により、予算の大幅な見直しを余儀なくされる可能性が高い。";
-                  if (p.includes("英検2級")) return "もしあの時彼のアドバイスを聞いていれば、今頃こんな苦労はしていなかっただろう。";
-                  if (p.includes("準2級")) return "彼が昨日見せてくれた写真は、私が今まで見た中で最も美しい風景だった。";
                   if (p.includes("中3")) return "私はシカゴに住んでいる友人を訪ねるつもりです。";
-                  if (p.includes("中2")) return "私たちは先週末、公園でサッカーをして楽しみました。";
                   return "明日は晴れるといいな。";
                 }
               };
@@ -159,7 +173,7 @@
                 }
               };
               
-              generateNextQuestion(0);
+              generateNextQuestion(0, 'daily');
             } else {
               setAiStatus('unsupported');
               setErrorMsg(errMsg);
@@ -168,6 +182,7 @@
         };
 
         initAI();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
 
       useEffect(() => {
@@ -181,24 +196,26 @@
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             if (appState === 'feedback') {
               e.preventDefault();
-              generateNextQuestion(correctCount);
+              generateNextQuestion(correctCount, selectedTopic);
             }
           }
         };
         window.addEventListener('keydown', handleGlobalKeyDown);
         return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-      }, [appState, correctCount]);
+      }, [appState, correctCount, selectedTopic]);
 
-      const generateNextQuestion = async (currentCorrectCount) => {
+      const generateNextQuestion = async (currentCorrectCount, topicId) => {
         setAppState('generating');
         setUserAnswer('');
         setFeedback(null);
         setErrorMsg('');
 
         const targetLevel = getLevelInfo(currentCorrectCount);
+        const currentTopic = TOPICS.find(t => t.id === topicId) || TOPICS[0];
+        setActiveTopicLabel(currentTopic.label); // 表示用にセット
 
         try {
-          const prompt = `英語の翻訳練習になる日本語の文を「1つ」だけ出力してください。\n条件：\n・難易度：${targetLevel.name}\n・内容：${targetLevel.prompt}\n・出力は日本語の文のみにしてください（英語や解説は絶対に含めないでください）。`;
+          const prompt = `英語の翻訳練習になる日本語の文を「1つ」だけ出力してください。\n条件：\n・難易度：${targetLevel.name}（${targetLevel.prompt}）\n・テーマ・シチュエーション：${currentTopic.label}（${currentTopic.desc}）\n・出力は日本語の文のみにしてください（英語や解説は絶対に含めないでください）。`;
           
           let generatedText = await generatorSession.current.prompt(prompt);
           generatedText = generatedText.replace(/['"]/g, '').trim();
@@ -324,7 +341,7 @@
             )}
 
             {/* ヘッダー */}
-            <header className="flex items-center justify-between mb-8 px-2">
+            <header className="flex items-center justify-between mb-6 px-2">
               <div className="flex items-center space-x-3">
                 <div className={`p-2 rounded-xl text-white transition-colors duration-500 ${theme.iconBg}`}>
                   <BookOpen className="w-6 h-6" />
@@ -348,6 +365,28 @@
               </div>
             </header>
 
+            {/* 設定コントロールバー */}
+            <div className="flex justify-between items-center mb-4 px-2">
+              <div className="flex items-center space-x-2">
+                <Settings2 className={`w-4 h-4 ${currentLevel.color === 'slate' ? 'text-slate-400' : 'text-slate-500'}`} />
+                <span className={`text-sm font-bold ${currentLevel.color === 'slate' ? 'text-slate-400' : 'text-slate-600'}`}>
+                  出題テーマ:
+                </span>
+                <select
+                  value={selectedTopic}
+                  onChange={(e) => setSelectedTopic(e.target.value)}
+                  className={`text-sm font-bold py-1.5 px-3 rounded-xl border outline-none transition-colors cursor-pointer shadow-sm
+                    ${currentLevel.color === 'slate' 
+                      ? 'bg-slate-800 text-slate-200 border-slate-700 focus:border-red-500' 
+                      : 'bg-white text-slate-700 border-slate-200 focus:border-blue-500'}`}
+                >
+                  {TOPICS.map(t => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             {/* メインカード */}
             <main className={`bg-white rounded-3xl shadow-lg overflow-hidden transition-all duration-500 ${currentLevel.color === 'slate' ? 'border-2 border-red-900 shadow-red-900/20' : 'border border-slate-200'}`}>
               {/* 問題セクション */}
@@ -355,7 +394,7 @@
                 <div className="flex items-center justify-between mb-4">
                   <div className={`flex items-center text-sm font-bold transition-colors duration-500 ${theme.text}`}>
                     <MessageSquare className="w-4 h-4 mr-2" />
-                    <span>日本語のお題</span>
+                    <span>日本語のお題 <span className="opacity-70 font-normal">({activeTopicLabel})</span></span>
                   </div>
                   {/* 現在の難易度バッジ */}
                   <div className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all duration-500 flex items-center space-x-1.5 ${theme.badge} ${levelUpAnim ? 'shake-animation scale-110' : ''}`}>
@@ -465,7 +504,7 @@
                     {/* 次の問題へボタン */}
                     <div className="flex justify-center pt-4">
                       <button
-                        onClick={() => generateNextQuestion(correctCount)}
+                        onClick={() => generateNextQuestion(correctCount, selectedTopic)}
                         className={`flex items-center px-8 py-4 text-white rounded-full font-bold transition-all duration-300 shadow-lg hover:shadow-xl active:scale-95 group
                           ${theme.button}`}
                       >
