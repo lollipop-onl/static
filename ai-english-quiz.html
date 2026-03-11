@@ -46,7 +46,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
     import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-    import { BookOpen, PenTool, CheckCircle, RefreshCw, AlertTriangle, Send, ChevronRight, MessageSquare, Info, Flame, Settings2 } from 'https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0';
+    import { BookOpen, PenTool, CheckCircle, RefreshCw, AlertTriangle, Send, ChevronRight, MessageSquare, Info, Flame, Settings2, Target } from 'https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0';
 
     // 出題テーマの定義
     const TOPICS = [
@@ -57,7 +57,7 @@
       { id: 'romance', label: '恋愛・ドラマ', desc: '映画やドラマに出てくるような少し感情的な表現' }
     ];
 
-    // カラーテーマの定義（Tailwind CDNがパースできるように完全なクラス名を記述）
+    // カラーテーマの定義
     const COLOR_THEMES = {
       green: { iconBg: 'bg-green-600', text: 'text-green-600', bgLight: 'bg-green-50/50', button: 'bg-green-600 hover:bg-green-700', badge: 'bg-white text-green-700 border-green-200', outline: 'focus:ring-green-500' },
       teal: { iconBg: 'bg-teal-600', text: 'text-teal-600', bgLight: 'bg-teal-50/50', button: 'bg-teal-600 hover:bg-teal-700', badge: 'bg-white text-teal-700 border-teal-200', outline: 'focus:ring-teal-500' },
@@ -82,16 +82,22 @@
       const [streakCount, setStreakCount] = useState(0);
       const [levelUpAnim, setLevelUpAnim] = useState(false);
       
-      // 選択中の出題テーマ
+      // 弱点記録用のステート
+      const [weaknessRecord, setWeaknessRecord] = useState('');
+      
       const [selectedTopic, setSelectedTopic] = useState('daily');
-      // 出題時に実際に使用されたテーマ（UIのラグ防止のため保持）
       const [activeTopicLabel, setActiveTopicLabel] = useState('');
 
       const generatorSession = useRef(null);
       const graderSession = useRef(null);
       const textareaRef = useRef(null);
+      const currentWeaknessRef = useRef(weaknessRecord);
 
-      // レベル情報を取得する関数
+      // 常に最新の弱点をRefに保持（モック等からアクセスするため）
+      useEffect(() => {
+        currentWeaknessRef.current = weaknessRecord;
+      }, [weaknessRecord]);
+
       const getLevelInfo = (count) => {
         if (count >= 12) return { name: "悪魔レベル (ネイティブ級)", emoji: "👿", color: "slate", prompt: "ネイティブスピーカーが使うような高度な慣用句や複雑なニュアンスを含む、非常に難解で洗練された文" };
         if (count >= 10) return { name: "TOEIC 800点レベル", emoji: "💀", color: "purple", prompt: "フォーマルで複雑な文、または専門的な内容を含む文" };
@@ -129,7 +135,6 @@
 
             if (needsDownload) setAiStatus('downloading');
 
-            // 出題用セッション（システムプロンプトは汎用的なものにしておき、ユーザープロンプトで条件を付与する）
             generatorSession.current = await LM.create({
               systemPrompt: "あなたは英語学習アプリの出題者です。指定されたレベルとテーマに合わせた自然な日本語の文を「1つだけ」出力してください。余計な説明や英語の解答は絶対に含めず、日本語の文のみを出力してください。",
               monitor(m) {
@@ -157,7 +162,6 @@
               generatorSession.current = {
                 prompt: async (p) => {
                   await new Promise(resolve => setTimeout(resolve, 800));
-                  // モック時の適当な出し分け
                   if (p.includes("IT・コードレビュー")) return "この関数のパフォーマンスを改善するために、キャッシュを導入すべきだと思います。";
                   if (p.includes("ビジネス")) return "明日の15時までに、会議の議事録を共有していただけますか？";
                   if (p.includes("ネイティブ級")) return "彼がその計画に難色を示したのも無理はない、そもそも最初から破綻していたのだから。";
@@ -169,7 +173,13 @@
               graderSession.current = {
                 prompt: async () => {
                   await new Promise(resolve => setTimeout(resolve, 1500));
-                  return `評価: Good\n模範解答: (Mock Answer) It's just a mock translation.\n解説: 【※これはモックモードの自動応答です】\nプレビュー環境のセキュリティ制限により、Gemini Nanoにアクセスできませんでした。アプリのUIや画面遷移を確認するためのダミーフィードバックを表示しています。`;
+                  // モックでもたまに Needs Improvement にして弱点を更新するテスト用ロジック
+                  const isBad = Math.random() > 0.7;
+                  const currentRec = currentWeaknessRef.current;
+                  if (isBad) {
+                     return `評価: Needs Improvement\n模範解答: (Mock Answer) This is a mock translation.\n解説: 【※これはモックモードです】文法に誤りがあります。\n弱点更新: 冠詞(a/the)の抜け漏れが目立ちます。さらに時制の一致の理解が不十分な傾向が強調されています。`;
+                  }
+                  return `評価: Good\n模範解答: (Mock Answer) It's just a mock translation.\n解説: 【※モックモードの自動応答です】\nプレビュー環境のためダミーです。\n弱点更新: ${currentRec || '特になし'}`;
                 }
               };
               
@@ -212,10 +222,11 @@
 
         const targetLevel = getLevelInfo(currentCorrectCount);
         const currentTopic = TOPICS.find(t => t.id === topicId) || TOPICS[0];
-        setActiveTopicLabel(currentTopic.label); // 表示用にセット
+        setActiveTopicLabel(currentTopic.label);
 
         try {
-          const prompt = `英語の翻訳練習になる日本語の文を「1つ」だけ出力してください。\n条件：\n・難易度：${targetLevel.name}（${targetLevel.prompt}）\n・テーマ・シチュエーション：${currentTopic.label}（${currentTopic.desc}）\n・出力は日本語の文のみにしてください（英語や解説は絶対に含めないでください）。`;
+          const weaknessPrompt = currentWeaknessRef.current ? `\n・ユーザーの現在の弱点：${currentWeaknessRef.current}\n※この弱点を克服する練習になるような文構造や単語を含めてください。` : '';
+          const prompt = `英語の翻訳練習になる日本語の文を「1つ」だけ出力してください。\n条件：\n・難易度：${targetLevel.name}（${targetLevel.prompt}）\n・テーマ・シチュエーション：${currentTopic.label}（${currentTopic.desc}）${weaknessPrompt}\n・出力は日本語の文のみにしてください（英語や解説は絶対に含めないでください）。`;
           
           let generatedText = await generatorSession.current.prompt(prompt);
           generatedText = generatedText.replace(/['"]/g, '').trim();
@@ -234,14 +245,29 @@
         setErrorMsg('');
 
         try {
-          const prompt = `以下の【お題】の日本語の文に対する、【生徒の回答】の英語翻訳を採点し、フィードバックを行ってください。\n\n【お題】: ${question}\n【生徒の回答】: ${userAnswer}\n\n以下の形式で厳密に出力してください。\n評価: (Perfect, Good, Needs Improvement のいずれか)\n模範解答: (より自然で正確な英語の翻訳例)\n解説: (生徒の回答の良かった点、文法の修正点、模範解答の解説などを日本語で短く丁寧に)`;
+          const prompt = `以下の【お題】の日本語の文に対する、【生徒の回答】の英語翻訳を採点し、フィードバックを行ってください。
+
+【お題】: ${question}
+【生徒の回答】: ${userAnswer}
+【現在のユーザーの弱点記録】: ${currentWeaknessRef.current || 'まだありません'}
+
+以下の形式で厳密に出力してください。
+評価: (Perfect, Good, Needs Improvement のいずれか)
+模範解答: (より自然で正確な英語の翻訳例)
+解説: (生徒の回答の良かった点、文法の修正点、模範解答の解説などを日本語で短く丁寧に)
+弱点更新: (評価が Needs Improvement の場合、今回のミスと【現在のユーザーの弱点記録】を分析し、最も頻度が高く影響の大きい弱点が際立つように記録を更新・統合して出力してください。軽微なものは削除して構いません。評価が Perfect や Good の場合は、現在の記録をそのまま出力するか、「特になし」と出力してください。)`;
+
           const aiFeedback = await graderSession.current.prompt(prompt);
           
           const evaluationMatch = aiFeedback.match(/評価:\s*(.*)/)?.[1] || 'Good';
+          // 解説と弱点更新を分割して取得
+          const explanationMatch = aiFeedback.match(/解説:\s*([\s\S]*?)(?=弱点更新:|$)/)?.[1] || aiFeedback;
+          const weaknessMatch = aiFeedback.match(/弱点更新:\s*([\s\S]*)/)?.[1];
+
           const parsedFeedback = {
             evaluation: evaluationMatch,
             modelAnswer: aiFeedback.match(/模範解答:\s*(.*)/)?.[1] || '(模範解答を取得できませんでした)',
-            explanation: aiFeedback.match(/解説:\s*([\s\S]*)/)?.[1] || aiFeedback,
+            explanation: explanationMatch.trim(),
           };
 
           const isCorrect = /perfect|good|excellent/i.test(evaluationMatch);
@@ -250,7 +276,6 @@
             setCorrectCount(nextCount);
             setStreakCount(prev => prev + 1);
             
-            // レベルアップしたかどうかを判定してアニメーションをトリガー
             const prevLevel = getLevelInfo(correctCount);
             const nextLevelInfo = getLevelInfo(nextCount);
             if (prevLevel.name !== nextLevelInfo.name) {
@@ -259,6 +284,11 @@
             }
           } else {
             setStreakCount(0);
+          }
+
+          // 弱点記録の更新処理 (特になし、等の場合は更新しない/無視する)
+          if (weaknessMatch && !/特になし|まだありません/.test(weaknessMatch)) {
+            setWeaknessRecord(weaknessMatch.trim());
           }
 
           setFeedback(parsedFeedback);
@@ -386,6 +416,20 @@
                 </select>
               </div>
             </div>
+
+            {/* AI苦手分析レポート（弱点がある場合のみ表示） */}
+            {weaknessRecord && (
+              <div className={`mb-4 p-4 rounded-2xl border shadow-sm animate-in transition-colors duration-500
+                ${currentLevel.color === 'slate' ? 'bg-red-950/40 border-red-900' : 'bg-red-50 border-red-200'}`}>
+                <h3 className={`text-sm font-bold flex items-center mb-2 ${currentLevel.color === 'slate' ? 'text-red-500' : 'text-red-800'}`}>
+                  <Target className="w-4 h-4 mr-1.5" />
+                  AI 苦手分析レポート
+                </h3>
+                <p className={`text-sm leading-relaxed whitespace-pre-wrap ${currentLevel.color === 'slate' ? 'text-red-200' : 'text-red-900'}`}>
+                  {weaknessRecord}
+                </p>
+              </div>
+            )}
 
             {/* メインカード */}
             <main className={`bg-white rounded-3xl shadow-lg overflow-hidden transition-all duration-500 ${currentLevel.color === 'slate' ? 'border-2 border-red-900 shadow-red-900/20' : 'border border-slate-200'}`}>
