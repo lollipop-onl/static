@@ -52,6 +52,9 @@
       const generatorSession = useRef(null);
       const graderSession = useRef(null);
 
+      // テキストエリアへのフォーカス用Ref
+      const textareaRef = useRef(null);
+
       // 初期化：AI機能のチェックとセッション作成
       useEffect(() => {
         const initAI = async () => {
@@ -160,6 +163,27 @@
         initAI();
       }, []);
 
+      // アプリの状態が'answering'に変わったら、テキストエリアにフォーカスする
+      useEffect(() => {
+        if (appState === 'answering' && textareaRef.current) {
+          textareaRef.current.focus();
+        }
+      }, [appState]);
+
+      // グローバルなキーボードショートカット (フィードバック画面での Cmd+Enter)
+      useEffect(() => {
+        const handleGlobalKeyDown = (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            if (appState === 'feedback') {
+              e.preventDefault();
+              generateNextQuestion();
+            }
+          }
+        };
+        window.addEventListener('keydown', handleGlobalKeyDown);
+        return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+      }, [appState]);
+
       // 問題を生成する
       const generateNextQuestion = async () => {
         setAppState('generating');
@@ -218,6 +242,16 @@
           console.error("Grading Error:", error);
           setErrorMsg('採点中にエラーが発生しました。');
           setAppState('answering');
+        }
+      };
+
+      // テキストエリア内でのキーボードショートカット処理
+      const handleTextareaKeyDown = (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          if (userAnswer.trim() && appState === 'answering') {
+            submitAnswer();
+          }
         }
       };
 
@@ -343,8 +377,10 @@
                     </label>
                     <textarea
                       id="answer"
+                      ref={textareaRef}
                       value={userAnswer}
                       onChange={(e) => setUserAnswer(e.target.value)}
+                      onKeyDown={handleTextareaKeyDown}
                       disabled={appState === 'generating' || appState === 'grading'}
                       placeholder="Type your English translation here..."
                       className="w-full p-4 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 resize-none h-32 text-lg"
@@ -370,6 +406,7 @@
                           <>
                             <Send className="w-5 h-5 mr-2" />
                             回答を提出
+                            <span className="text-xs opacity-70 ml-2 bg-blue-700/50 px-2 py-0.5 rounded">⌘ Enter</span>
                           </>
                         )}
                       </button>
@@ -428,7 +465,8 @@
                         className="flex items-center px-8 py-4 bg-slate-800 text-white rounded-full font-bold hover:bg-slate-900 transition-colors duration-200 shadow-lg hover:shadow-xl active:scale-95 group"
                       >
                         次の問題へ
-                        <ChevronRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
+                        <span className="text-xs opacity-70 ml-2 bg-slate-700 px-2 py-0.5 rounded text-white">⌘ Enter</span>
+                        <ChevronRight className="w-5 h-5 ml-1 group-hover:translate-x-1 transition-transform" />
                       </button>
                     </div>
                   </div>
