@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prompt OCR</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ["JetBrains Mono", "SF Mono", "Fira Code", "monospace"] },
+        },
+      },
+    };
+  </script>
+  <style>
+    .scan-line {
+      position: absolute; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, #22d3ee, transparent);
+      animation: scan 2s ease-in-out infinite;
+    }
+    @keyframes scan {
+      0%, 100% { top: 0; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { top: 100%; opacity: 0; }
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .drop-zone:hover { border-color: #22d3ee !important; background: rgba(34,211,238,0.03) !important; }
+    pre::-webkit-scrollbar { width: 6px; }
+    pre::-webkit-scrollbar-track { background: #18181b; }
+    pre::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen bg-[#0a0a0b] text-zinc-200 font-mono">
+
+  <!-- Header -->
+  <header class="border-b border-zinc-800 px-8 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 border-2 border-cyan-400 rounded-md grid place-items-center text-sm">⌘</div>
+      <div>
+        <h1 class="text-base font-semibold tracking-widest text-zinc-50">PROMPT OCR</h1>
+        <p class="text-[10px] text-zinc-500 tracking-[0.15em] uppercase">Chrome Built-in AI · Prompt API</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div id="statusDot" class="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.4)]"></div>
+      <span id="statusLabel" class="text-[11px] text-zinc-400">CHECKING...</span>
+    </div>
+  </header>
+
+  <main class="max-w-[960px] mx-auto px-6 py-8">
+
+    <!-- Unsupported Banner -->
+    <div id="banner" class="hidden bg-[#1c1008] border border-yellow-800 rounded-lg px-5 py-4 mb-6 text-[13px] leading-relaxed">
+      <p class="font-semibold text-yellow-300 mb-1">⚠ Prompt API が利用できません</p>
+      <p class="text-zinc-400 mb-2">Chrome Canary / Dev (v138+) で以下のフラグを有効にしてください:</p>
+      <code class="block bg-[#0a0a0b] rounded px-3 py-2 text-cyan-400 text-xs break-all leading-relaxed">
+        chrome://flags/#optimization-guide-on-device-model → Enabled<br>
+        chrome://flags/#prompt-api-for-gemini-nano → Enabled<br>
+        chrome://flags/#prompt-api-for-gemini-nano-multimodal-input → Enabled
+      </code>
+      <p class="text-zinc-600 text-[11px] mt-2">フラグ有効後、chrome://components で Optimization Guide On Device Model をダウンロードしてください。</p>
+    </div>
+
+    <!-- Drop Zone -->
+    <div
+      id="dropZone"
+      class="drop-zone relative border-2 border-dashed border-zinc-800 rounded-xl overflow-hidden cursor-pointer bg-[#111113] transition-colors min-h-[240px] flex items-center justify-center"
+    >
+      <div id="placeholder" class="text-center py-12">
+        <div class="text-4xl mb-3 opacity-30">◻</div>
+        <p class="text-[13px] text-zinc-500 leading-loose">
+          画像をドロップ or クリックして選択<br>
+          <span class="text-[11px] text-zinc-600">PNG / JPG / WebP</span>
+        </p>
+      </div>
+      <div id="previewWrap" class="hidden w-full relative">
+        <img id="preview" class="block w-full max-h-[400px] object-contain transition-opacity" />
+        <div id="scanOverlay" class="hidden absolute inset-0 bg-[#0a0a0b99] grid place-items-center">
+          <div class="scan-line"></div>
+          <div class="text-center">
+            <div class="text-[13px] text-cyan-400" style="animation:blink 1s infinite">SCANNING...</div>
+            <div id="overlayTimer" class="text-2xl font-light mt-1">0.0s</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" class="hidden" />
+
+    <!-- Actions -->
+    <div class="flex gap-2.5 mt-4 justify-end">
+      <button
+        id="btnReset"
+        class="hidden px-5 py-2.5 text-xs bg-transparent text-zinc-500 border border-zinc-800 rounded-md tracking-wide hover:border-zinc-600 hover:text-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >RESET</button>
+      <button
+        id="btnRun"
+        disabled
+        class="px-7 py-2.5 text-xs font-semibold rounded-md tracking-widest transition-all disabled:bg-zinc-900 disabled:text-zinc-600 disabled:cursor-not-allowed enabled:bg-cyan-400 enabled:text-zinc-900 enabled:hover:bg-cyan-300 enabled:cursor-pointer"
+      >RUN OCR</button>
+    </div>
+
+    <!-- Error -->
+    <div id="errorBox" class="hidden mt-4 px-4 py-3 bg-[#1a0a0a] border border-red-900 rounded-lg text-xs text-red-300"></div>
+
+    <!-- Result -->
+    <div id="resultSection" class="hidden mt-6">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] text-zinc-500 tracking-widest uppercase">Result</span>
+          <span id="resultMeta" class="text-[10px] text-zinc-700"></span>
+        </div>
+        <button
+          id="btnCopy"
+          class="px-3.5 py-1.5 text-[11px] bg-zinc-900 text-zinc-400 border border-zinc-800 rounded hover:border-zinc-600 hover:text-zinc-300 transition-colors"
+        >COPY</button>
+      </div>
+      <pre id="resultText" class="m-0 p-5 bg-[#111113] border border-zinc-800 rounded-lg text-[13px] leading-loose whitespace-pre-wrap break-words max-h-[400px] overflow-y-auto text-zinc-300"></pre>
+    </div>
+
+    <!-- Footer -->
+    <div class="mt-12 pt-4 border-t border-zinc-900 text-[11px] text-zinc-700 leading-loose">
+      <p>window.ai.languageModel (Gemini Nano) を使用。処理はすべてローカルで実行されます。</p>
+      <p class="mt-1">Multimodal 入力には chrome://flags/#prompt-api-for-gemini-nano-multimodal-input の有効化が必要です。</p>
+    </div>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const dropZone = $("#dropZone");
+    const fileInput = $("#fileInput");
+    const preview = $("#preview");
+    const previewWrap = $("#previewWrap");
+    const placeholder = $("#placeholder");
+    const scanOverlay = $("#scanOverlay");
+    const overlayTimer = $("#overlayTimer");
+    const btnRun = $("#btnRun");
+    const btnReset = $("#btnReset");
+    const btnCopy = $("#btnCopy");
+    const banner = $("#banner");
+    const errorBox = $("#errorBox");
+    const resultSection = $("#resultSection");
+    const resultText = $("#resultText");
+    const resultMeta = $("#resultMeta");
+    const statusDot = $("#statusDot");
+    const statusLabel = $("#statusLabel");
+
+    let currentFile = null;
+    let session = null;
+    let timerId = null;
+    let apiReady = false;
+
+    // ── API Check ──
+    (async () => {
+      try {
+        if (!("ai" in window) || !window.ai?.languageModel) throw new Error();
+        const caps = await window.ai.languageModel.capabilities();
+        if (caps.available === "no") throw new Error();
+        setStatus("ready");
+        apiReady = true;
+      } catch {
+        setStatus("unavailable");
+        banner.classList.remove("hidden");
+      }
+    })();
+
+    function setStatus(s) {
+      const map = {
+        checking:    { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "CHECKING..." },
+        ready:       { bg: "bg-green-500",  shadow: "shadow-[0_0_8px_rgba(34,197,94,0.4)]",  label: "API READY" },
+        unavailable: { bg: "bg-red-500",    shadow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]",  label: "UNAVAILABLE" },
+      };
+      const m = map[s] || map.checking;
+      statusDot.className = `w-2 h-2 rounded-full ${m.bg} ${m.shadow}`;
+      statusLabel.textContent = m.label;
+    }
+
+    // ── File Handling ──
+    dropZone.addEventListener("click", () => { if (!btnRun.disabled || !currentFile) fileInput.click(); });
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.style.borderColor = "#22d3ee"; });
+    dropZone.addEventListener("dragleave", () => { dropZone.style.borderColor = ""; });
+    dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.style.borderColor = ""; loadFile(e.dataTransfer?.files?.[0]); });
+    fileInput.addEventListener("change", () => loadFile(fileInput.files?.[0]));
+
+    function loadFile(file) {
+      if (!file || !file.type.startsWith("image/")) return;
+      currentFile = file;
+      hideError();
+      resultSection.classList.add("hidden");
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        preview.src = e.target.result;
+        preview.style.opacity = "1";
+        previewWrap.classList.remove("hidden");
+        placeholder.classList.add("hidden");
+        btnReset.classList.remove("hidden");
+        btnRun.disabled = !apiReady;
+        btnRun.textContent = "RUN OCR";
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // ── OCR ──
+    btnRun.addEventListener("click", runOCR);
+
+    async function runOCR() {
+      if (!currentFile) return;
+      btnRun.disabled = true;
+      btnReset.disabled = true;
+      hideError();
+      resultSection.classList.add("hidden");
+
+      // show overlay
+      scanOverlay.classList.remove("hidden");
+      preview.style.opacity = "0.5";
+      const start = Date.now();
+      const tick = () => { overlayTimer.textContent = ((Date.now() - start) / 1000).toFixed(1) + "s"; };
+      timerId = setInterval(tick, 100);
+
+      const elapsed = () => ((Date.now() - start) / 1000).toFixed(1);
+
+      try {
+        if (session) { session.destroy(); session = null; }
+
+        session = await window.ai.languageModel.create({
+          systemPrompt:
+            "You are a precise OCR engine. Extract ALL text from the provided image exactly as it appears. Preserve line breaks and layout structure. Output only the extracted text, nothing else. If no text is found, respond with '(テキストが見つかりません)'.",
+        });
+
+        let response;
+        try {
+          // Try multimodal prompt
+          response = await session.prompt([
+            { type: "text",  content: "以下の画像からすべてのテキストを正確に抽出してください。レイアウトや改行をできるだけ保持してください。" },
+            { type: "image", content: currentFile },
+          ]);
+        } catch (e) {
+          // Fallback: base64 text-only prompt
+          const base64 = await fileToBase64(currentFile);
+          if (session) session.destroy();
+          session = await window.ai.languageModel.create({
+            systemPrompt: "You are a precise OCR engine. Extract ALL text exactly as it appears. Preserve layout. Output only extracted text.",
+          });
+          response = await session.prompt(
+            `以下はbase64エンコードされた画像です。この画像内のすべてのテキストを抽出してください:\n\n${base64}`
+          );
+        }
+
+        clearInterval(timerId);
+        showResult(response, elapsed());
+      } catch (e) {
+        clearInterval(timerId);
+        showError(`OCR 失敗: ${e.message}`);
+      } finally {
+        scanOverlay.classList.add("hidden");
+        preview.style.opacity = "1";
+        btnRun.disabled = false;
+        btnReset.disabled = false;
+        btnRun.textContent = "RUN OCR";
+      }
+    }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+
+    // ── Result / Error / Reset ──
+    function showResult(text, sec) {
+      resultText.textContent = text;
+      resultMeta.textContent = `${text.length} chars · ${sec}s`;
+      resultSection.classList.remove("hidden");
+    }
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+    function hideError() { errorBox.classList.add("hidden"); }
+
+    btnCopy.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(resultText.textContent);
+      btnCopy.textContent = "COPIED ✓";
+      btnCopy.classList.add("!border-green-600/30", "!text-green-400", "!bg-green-500/10");
+      setTimeout(() => {
+        btnCopy.textContent = "COPY";
+        btnCopy.classList.remove("!border-green-600/30", "!text-green-400", "!bg-green-500/10");
+      }, 1500);
+    });
+
+    btnReset.addEventListener("click", () => {
+      currentFile = null;
+      fileInput.value = "";
+      preview.src = "";
+      previewWrap.classList.add("hidden");
+      placeholder.classList.remove("hidden");
+      scanOverlay.classList.add("hidden");
+      btnReset.classList.add("hidden");
+      btnRun.disabled = true;
+      btnRun.textContent = "RUN OCR";
+      hideError();
+      resultSection.classList.remove("hidden");
+      resultSection.classList.add("hidden");
+      if (session) { session.destroy(); session = null; }
+    });
+  </script>
+</body>
+</html>
