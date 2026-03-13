@@ -286,27 +286,44 @@
       overlayCanvas.height = 0;
     }
 
+    // object-contain の実際の描画領域を計算
+    function getRenderedImageRect(img) {
+      const elemW = img.clientWidth;
+      const elemH = img.clientHeight;
+      const natW = img.naturalWidth;
+      const natH = img.naturalHeight;
+      if (!natW || !natH) return { x: 0, y: 0, w: elemW, h: elemH };
+
+      const scale = Math.min(elemW / natW, elemH / natH);
+      const renderedW = natW * scale;
+      const renderedH = natH * scale;
+      const offsetX = (elemW - renderedW) / 2;
+      const offsetY = (elemH - renderedH) / 2;
+      return { x: offsetX, y: offsetY, w: renderedW, h: renderedH };
+    }
+
     function drawBoundingBoxes(faces) {
       const img = preview;
-      const rect = img.getBoundingClientRect();
+      const elemRect = img.getBoundingClientRect();
       const wrapRect = previewWrap.getBoundingClientRect();
+      const rendered = getRenderedImageRect(img);
 
-      overlayCanvas.width = rect.width;
-      overlayCanvas.height = rect.height;
-      overlayCanvas.style.left = (rect.left - wrapRect.left) + "px";
-      overlayCanvas.style.top = (rect.top - wrapRect.top) + "px";
-      overlayCanvas.style.width = rect.width + "px";
-      overlayCanvas.style.height = rect.height + "px";
+      overlayCanvas.width = elemRect.width;
+      overlayCanvas.height = elemRect.height;
+      overlayCanvas.style.left = (elemRect.left - wrapRect.left) + "px";
+      overlayCanvas.style.top = (elemRect.top - wrapRect.top) + "px";
+      overlayCanvas.style.width = elemRect.width + "px";
+      overlayCanvas.style.height = elemRect.height + "px";
 
       const ctx = overlayCanvas.getContext("2d");
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
       faces.forEach((face, i) => {
         const color = FACE_COLORS[i % FACE_COLORS.length];
-        const x = face.x * rect.width;
-        const y = face.y * rect.height;
-        const w = face.w * rect.width;
-        const h = face.h * rect.height;
+        const x = rendered.x + face.x * rendered.w;
+        const y = rendered.y + face.y * rendered.h;
+        const w = face.w * rendered.w;
+        const h = face.h * rendered.h;
 
         // 半透明背景
         ctx.fillStyle = color + "15";
