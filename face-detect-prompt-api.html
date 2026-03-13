@@ -167,33 +167,18 @@
     let lastResult = null;
 
     const FACE_COLORS = ["#a78bfa", "#22d3ee", "#34d399", "#fb923c", "#f472b6", "#facc15", "#60a5fa", "#e879f9"];
+    const FACE_API_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.min.js";
+    const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/";
 
-    // ── Face Detection Worker ──
-    const faceWorker = new Worker("face-detect/worker.js");
-    let workerResolve = null;
-    let workerReject = null;
-
-    faceWorker.onmessage = (e) => {
-      const { type, faces, message } = e.data;
-      if (type === "loaded") {
-        diag("Worker: models loaded");
-        faceApiReady = true;
-        updateStatus();
-      } else if (type === "detected") {
-        if (workerResolve) workerResolve(faces);
-        workerResolve = workerReject = null;
-      } else if (type === "error") {
-        diag("Worker error: " + message);
-        if (workerReject) workerReject(new Error(message));
-        workerResolve = workerReject = null;
-      }
-    };
-
-    function detectFacesInWorker(imageBitmap) {
+    // ── face-api.js を非同期読み込み（レンダリング非ブロック） ──
+    function loadFaceApiScript() {
       return new Promise((resolve, reject) => {
-        workerResolve = resolve;
-        workerReject = reject;
-        faceWorker.postMessage({ type: "detect", imageBitmap }, [imageBitmap]);
+        const s = document.createElement("script");
+        s.src = FACE_API_URL;
+        s.async = true;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error("Failed to load face-api.js"));
+        document.head.appendChild(s);
       });
     }
 
@@ -257,30 +242,42 @@
       debugPanel.appendChild(diagLabel);
       debugPanel.appendChild(document.createTextNode("initializing..."));
 
-      // Load face-api.js models in Worker (non-blocking)
-      diag("Loading face-api.js models in Worker...");
-      faceWorker.postMessage({ type: "load" });
-
-      // Check Prompt API (parallel, on main thread)
-      try {
-        if (typeof LanguageModel !== "undefined") {
-          const avail = await LanguageModel.availability();
-          diag("LanguageModel.availability() \u2192 \"" + avail + "\"");
-          if (avail !== "unavailable") {
-            promptApiReady = true;
-          }
-        } else if ("ai" in window && window.ai?.languageModel) {
-          diag("Fallback: window.ai.languageModel detected");
-          window.__useLegacyAI = true;
-          const caps = await window.ai.languageModel.capabilities();
-          if (caps.available !== "no") {
-            promptApiReady = true;
-          }
+      // face-api.js と Prompt API を並行チェック
+      const faceApiPromise = (async () => {
+        try {
+          diag("Loading face-api.js (async)...");
+          await loadFaceApiScript();
+          diag("face-api.js script loaded");
+          await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+          diag("tinyFaceDetector model loaded");
+          faceApiReady = true;
+        } catch (e) {
+          diag("face-api.js load failed: " + e.message);
         }
-      } catch (e) {
-        diag("Prompt API check failed: " + e.message);
-      }
+      })();
 
+      const promptApiPromise = (async () => {
+        try {
+          if (typeof LanguageModel !== "undefined") {
+            const avail = await LanguageModel.availability();
+            diag("LanguageModel.availability() \u2192 \"" + avail + "\"");
+            if (avail !== "unavailable") {
+              promptApiReady = true;
+            }
+          } else if ("ai" in window && window.ai?.languageModel) {
+            diag("Fallback: window.ai.languageModel detected");
+            window.__useLegacyAI = true;
+            const caps = await window.ai.languageModel.capabilities();
+            if (caps.available !== "no") {
+              promptApiReady = true;
+            }
+          }
+        } catch (e) {
+          diag("Prompt API check failed: " + e.message);
+        }
+      })();
+
+      await Promise.all([faceApiPromise, promptApiPromise]);
       updateStatus();
     })();
 
@@ -437,11 +434,10 @@
       const elapsed = () => ((Date.now() - start) / 1000).toFixed(1);
 
       try {
-        // Step 1: face-api.js で顔検出 (Worker)
-        diag("Sending image to Worker for detection...");
-        const bitmap = await createImageBitmap(currentFile);
-        const detections = await detectFacesInWorker(bitmap);
-        diag("Detected " + detections.length + " face(s) via Worker");
+        // Step 1: face-api.js で顔検出
+        diag("Running face detection...");
+        const detections = await faceapi.detectAllFaces(preview, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.4 }));
+        diag("Detected " + detections.length + " face(s)");
 
         if (detections.length === 0) {
           clearInterval(timerId);
