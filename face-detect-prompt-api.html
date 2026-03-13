@@ -248,8 +248,8 @@
           diag("Loading face-api.js (async)...");
           await loadFaceApiScript();
           diag("face-api.js script loaded");
-          await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-          diag("tinyFaceDetector model loaded");
+          await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+          diag("ssdMobilenetv1 model loaded");
           faceApiReady = true;
         } catch (e) {
           diag("face-api.js load failed: " + e.message);
@@ -436,7 +436,7 @@
       try {
         // Step 1: face-api.js で顔検出
         diag("Running face detection...");
-        const detections = await faceapi.detectAllFaces(preview, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.4 }));
+        const detections = await faceapi.detectAllFaces(preview, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }));
         diag("Detected " + detections.length + " face(s)");
 
         if (detections.length === 0) {
