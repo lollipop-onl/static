@@ -1,6 +1,15 @@
 /* Face detection Web Worker using face-api.js */
 
-// face-api.js を Worker 内で読み込み
+// Worker には window/document がないので face-api.js の環境チェック用にシムを設定
+self.window = self;
+self.document = {
+  createElement: () => ({ getContext: () => null }),
+  createElementNS: () => ({ getContext: () => null }),
+};
+self.HTMLCanvasElement = OffscreenCanvas;
+self.HTMLImageElement = class HTMLImageElement {};
+self.HTMLVideoElement = class HTMLVideoElement {};
+
 importScripts("https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.min.js");
 
 const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/";
