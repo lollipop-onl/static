@@ -497,50 +497,76 @@
     }
 
     function parseJSON(text) {
+      diag("[parseJSON] input (" + text.length + " chars): " + text.substring(0, 300));
+
       // Step 1: strip markdown fences and trim
       let cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim();
+      diag("[parseJSON] step1 cleaned: " + cleaned.substring(0, 300));
 
       // Step 2: extract array portion
       const arrMatch = cleaned.match(/\[[\s\S]*\]/);
-      if (arrMatch) cleaned = arrMatch[0];
+      if (arrMatch) {
+        cleaned = arrMatch[0];
+        diag("[parseJSON] step2 array extracted: " + cleaned.substring(0, 300));
+      } else {
+        diag("[parseJSON] step2 no array found");
+      }
 
       // Step 3: try direct parse
       try {
         const parsed = JSON.parse(cleaned);
-        if (Array.isArray(parsed)) return parsed;
-      } catch { /* continue to repair */ }
+        if (Array.isArray(parsed)) { diag("[parseJSON] step3 direct parse OK, " + parsed.length + " items"); return parsed; }
+      } catch (e) { diag("[parseJSON] step3 direct parse failed: " + e.message); }
 
       // Step 4: repair common AI JSON mistakes
       let repaired = cleaned;
-      // fix `}}` → `}`  and `]]` → `]`
-      repaired = repaired.replace(/\}\s*\}/g, "}").replace(/\]\s*\]/g, "]");
+      // fix `}}` → `}` (but not inside strings — good enough heuristic)
+      repaired = repaired.replace(/\}\s*\}/g, "}");
+      // fix `]]` → `]`
+      repaired = repaired.replace(/\]\s*\]/g, "]");
       // fix trailing commas before } or ]
       repaired = repaired.replace(/,\s*([}\]])/g, "$1");
+      diag("[parseJSON] step4 after bracket/comma fix: ..." + repaired.slice(-80));
+
       // ensure outer brackets
       if (!repaired.startsWith("[")) repaired = "[" + repaired;
       if (!repaired.endsWith("]")) repaired = repaired + "]";
-      // rebalance: count { vs } and [ vs ]
-      const opens = (repaired.match(/\{/g) || []).length;
-      const closes = (repaired.match(/\}/g) || []).length;
-      if (opens > closes) repaired = repaired.slice(0, -1) + "}".repeat(opens - closes) + "]";
-      if (closes > opens) repaired = repaired.replace(/\}(?=\s*[,\]])/g, (m, off) => closes - opens > 0 ? (closes--, "") : m);
+
+      // rebalance braces
+      let openBraces = (repaired.match(/\{/g) || []).length;
+      let closeBraces = (repaired.match(/\}/g) || []).length;
+      diag("[parseJSON] step4 braces: { x" + openBraces + " } x" + closeBraces);
+      if (openBraces > closeBraces) {
+        repaired = repaired.slice(0, -1) + "}".repeat(openBraces - closeBraces) + "]";
+      } else if (closeBraces > openBraces) {
+        // remove excess closing braces (from right, before , or ])
+        let excess = closeBraces - openBraces;
+        repaired = repaired.replace(/\}(?=\s*[,\]])/g, (m) => {
+          if (excess > 0) { excess--; return ""; }
+          return m;
+        });
+      }
+      diag("[parseJSON] step4 repaired: " + repaired.substring(0, 300));
 
       try {
         const parsed = JSON.parse(repaired);
-        if (Array.isArray(parsed)) { diag("JSON repaired successfully"); return parsed; }
-      } catch { /* continue to per-object parse */ }
+        if (Array.isArray(parsed)) { diag("[parseJSON] step4 repair parse OK, " + parsed.length + " items"); return parsed; }
+      } catch (e) { diag("[parseJSON] step4 repair parse failed: " + e.message); }
 
       // Step 5: last resort — extract individual objects and parse each
+      diag("[parseJSON] step5 trying per-object extraction");
       const objMatches = cleaned.matchAll(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
       const results = [];
       for (const m of objMatches) {
         try {
           let obj = m[0].replace(/,\s*([}\]])/g, "$1");
           results.push(JSON.parse(obj));
-        } catch { /* skip unparseable object */ }
+          diag("[parseJSON] step5 extracted object OK");
+        } catch (e) { diag("[parseJSON] step5 object failed: " + e.message + " | " + m[0].substring(0, 100)); }
       }
-      if (results.length > 0) { diag("Parsed " + results.length + " face(s) via per-object extraction"); return results; }
+      if (results.length > 0) { diag("[parseJSON] step5 extracted " + results.length + " face(s)"); return results; }
 
+      diag("[parseJSON] all steps failed, returning null");
       return null;
     }
 
