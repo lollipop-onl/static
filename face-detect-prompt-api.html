@@ -320,11 +320,10 @@
 
       faces.forEach((face, i) => {
         const color = FACE_COLORS[i % FACE_COLORS.length];
+        const x = rendered.x + face.x * rendered.w;
+        const y = rendered.y + face.y * rendered.h;
         const w = face.w * rendered.w;
         const h = face.h * rendered.h;
-        // AI often returns center coords — draw from top-left
-        const x = rendered.x + face.x * rendered.w - w / 2;
-        const y = rendered.y + face.y * rendered.h - h / 2;
 
         // 半透明背景
         ctx.fillStyle = color + "15";
@@ -389,9 +388,9 @@
     // ── Detection ──
     btnRun.addEventListener("click", runDetect);
 
-    const SYSTEM_PROMPT = "You are a precise face detection and analysis engine. Detect ALL human faces in the provided image.\n\nFor each face, return a JSON array. Each element must have:\n- \"x\": left edge as ratio 0-1 of image width\n- \"y\": top edge as ratio 0-1 of image height\n- \"w\": width as ratio 0-1 of image width\n- \"h\": height as ratio 0-1 of image height\n- \"age\": estimated age range in Japanese (e.g. \"20代前半\", \"30代後半\")\n- \"gender\": gender in Japanese (\"男性\" or \"女性\")\n- \"expression\": facial expression in Japanese (e.g. \"笑顔\", \"真顔\", \"驚き\")\n- \"features\": array of notable features in Japanese (e.g. [\"メガネ\", \"ヒゲ\", \"帽子\"])\n\nOutput ONLY valid JSON array. No markdown, no explanation, no code fences. If no faces found, output [].";
+    const SYSTEM_PROMPT = "You are a precise face detection and analysis engine. Detect ALL human faces in the provided image.\n\nFor each face, return a JSON array. Each element must have:\n- \"x\": x-coordinate of the TOP-LEFT corner of the face bounding box, as a ratio from 0.0 (left edge of image) to 1.0 (right edge of image)\n- \"y\": y-coordinate of the TOP-LEFT corner of the face bounding box, as a ratio from 0.0 (top edge of image) to 1.0 (bottom edge of image)\n- \"w\": width of the bounding box as a ratio of total image width (typically 0.05-0.3 for a face)\n- \"h\": height of the bounding box as a ratio of total image height (typically 0.05-0.3 for a face)\n- \"age\": estimated age range in Japanese (e.g. \"20代前半\", \"30代後半\")\n- \"gender\": gender in Japanese (\"男性\" or \"女性\")\n- \"expression\": facial expression in Japanese (e.g. \"笑顔\", \"真顔\", \"驚き\")\n- \"features\": array of notable features in Japanese (e.g. [\"メガネ\", \"ヒゲ\", \"帽子\"])\n\nIMPORTANT: The bounding box should tightly wrap ONLY the face (forehead to chin, ear to ear). x,y is the TOP-LEFT corner, NOT the center. Keep w and h small — a face is usually 5-20% of image width.\n\nOutput ONLY valid JSON array. No markdown, no explanation, no code fences. If no faces found, output [].";
 
-    const USER_PROMPT = "この画像に写っているすべての人の顔を検出し、それぞれの位置と属性を分析してください。\n\n出力は以下の形式の JSON 配列のみを返してください（コードブロックやマークダウンは不要）:\n[{\"x\":0.1,\"y\":0.2,\"w\":0.15,\"h\":0.2,\"age\":\"30代\",\"gender\":\"男性\",\"expression\":\"笑顔\",\"features\":[\"メガネ\"]}]\n\n顔が見つからない場合は [] を返してください。";
+    const USER_PROMPT = "この画像に写っているすべての人の顔を検出してください。\n\n重要ルール:\n- x, y は顔を囲むボックスの「左上角」の座標（0.0〜1.0の比率）\n- w, h は顔だけを囲む小さいボックスのサイズ（顔は通常、画像幅の5〜20%程度）\n- ボックスは顔（額〜あご、耳〜耳）だけをタイトに囲む\n\n出力は以下の形式の JSON 配列のみ（コードブロック不要）:\n[{\"x\":0.25,\"y\":0.1,\"w\":0.1,\"h\":0.12,\"age\":\"30代\",\"gender\":\"男性\",\"expression\":\"笑顔\",\"features\":[\"メガネ\"]}]\n\n顔が見つからない場合は [] を返してください。";
 
     async function runDetect() {
       if (!currentFile) return;
