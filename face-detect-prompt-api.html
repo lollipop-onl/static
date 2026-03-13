@@ -470,7 +470,7 @@
           diag("JSON parse failed, retrying with stricter prompt...");
           const retryResponse = await session.prompt([
             { role: "user", content: [
-              { type: "text", value: "前の回答が正しい JSON ではありませんでした。有効な JSON 配列のみを出力してください。マークダウンやコードブロックは一切不要です。" },
+              { type: "text", value: "前の回答が正しい JSON ではありませんでした。以下のルールを厳守してください:\n1. 出力は [ で始まり ] で終わる JSON 配列のみ\n2. 各要素は { } で囲まれたオブジェクト（二重の }} は禁止）\n3. マークダウン・コードブロック・説明文は一切不要\n4. 例: [{\"x\":0.3,\"y\":0.2,\"w\":0.2,\"h\":0.3,\"age\":\"20代\",\"gender\":\"女性\",\"expression\":\"笑顔\",\"features\":[\"長髪\"]}]" },
             ]}
           ]);
           diag("Retry response: " + retryResponse.substring(0, 200) + "...");
@@ -497,16 +497,51 @@
     }
 
     function parseJSON(text) {
+      // Step 1: strip markdown fences and trim
+      let cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim();
+
+      // Step 2: extract array portion
+      const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (arrMatch) cleaned = arrMatch[0];
+
+      // Step 3: try direct parse
       try {
-        let cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim();
-        const match = cleaned.match(/\[[\s\S]*\]/);
-        if (match) cleaned = match[0];
         const parsed = JSON.parse(cleaned);
-        if (!Array.isArray(parsed)) return null;
-        return parsed;
-      } catch {
-        return null;
+        if (Array.isArray(parsed)) return parsed;
+      } catch { /* continue to repair */ }
+
+      // Step 4: repair common AI JSON mistakes
+      let repaired = cleaned;
+      // fix `}}` → `}`  and `]]` → `]`
+      repaired = repaired.replace(/\}\s*\}/g, "}").replace(/\]\s*\]/g, "]");
+      // fix trailing commas before } or ]
+      repaired = repaired.replace(/,\s*([}\]])/g, "$1");
+      // ensure outer brackets
+      if (!repaired.startsWith("[")) repaired = "[" + repaired;
+      if (!repaired.endsWith("]")) repaired = repaired + "]";
+      // rebalance: count { vs } and [ vs ]
+      const opens = (repaired.match(/\{/g) || []).length;
+      const closes = (repaired.match(/\}/g) || []).length;
+      if (opens > closes) repaired = repaired.slice(0, -1) + "}".repeat(opens - closes) + "]";
+      if (closes > opens) repaired = repaired.replace(/\}(?=\s*[,\]])/g, (m, off) => closes - opens > 0 ? (closes--, "") : m);
+
+      try {
+        const parsed = JSON.parse(repaired);
+        if (Array.isArray(parsed)) { diag("JSON repaired successfully"); return parsed; }
+      } catch { /* continue to per-object parse */ }
+
+      // Step 5: last resort — extract individual objects and parse each
+      const objMatches = cleaned.matchAll(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+      const results = [];
+      for (const m of objMatches) {
+        try {
+          let obj = m[0].replace(/,\s*([}\]])/g, "$1");
+          results.push(JSON.parse(obj));
+        } catch { /* skip unparseable object */ }
       }
+      if (results.length > 0) { diag("Parsed " + results.length + " face(s) via per-object extraction"); return results; }
+
+      return null;
     }
 
     // ── Results (DOM-based, no innerHTML with untrusted data) ──
