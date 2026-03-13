@@ -308,6 +308,11 @@
       const wrapRect = previewWrap.getBoundingClientRect();
       const rendered = getRenderedImageRect(img);
 
+      diag("[draw] elem=" + Math.round(elemRect.width) + "x" + Math.round(elemRect.height)
+        + " nat=" + img.naturalWidth + "x" + img.naturalHeight
+        + " rendered=" + Math.round(rendered.w) + "x" + Math.round(rendered.h)
+        + " offset=(" + Math.round(rendered.x) + "," + Math.round(rendered.y) + ")");
+
       overlayCanvas.width = elemRect.width;
       overlayCanvas.height = elemRect.height;
       overlayCanvas.style.left = (elemRect.left - wrapRect.left) + "px";
@@ -324,6 +329,7 @@
         const y = rendered.y + face.y * rendered.h;
         const w = face.w * rendered.w;
         const h = face.h * rendered.h;
+        diag("[draw] face#" + (i+1) + " ai=(" + face.x.toFixed(3) + "," + face.y.toFixed(3) + "," + face.w.toFixed(3) + "," + face.h.toFixed(3) + ") → px=(" + Math.round(x) + "," + Math.round(y) + "," + Math.round(w) + "," + Math.round(h) + ")");
 
         // 半透明背景
         ctx.fillStyle = color + "15";
