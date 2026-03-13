@@ -66,6 +66,12 @@
         chrome://flags/#prompt-api-for-gemini-nano-multimodal-input → Enabled
       </code>
       <p class="text-zinc-600 text-[11px] mt-2">フラグ有効後、chrome://components で Optimization Guide On Device Model をダウンロードしてください。</p>
+      <p id="diagInfo" class="text-zinc-500 text-[11px] mt-2 font-mono"></p>
+    </div>
+
+    <!-- Debug panel (always visible) -->
+    <div id="debugPanel" class="bg-zinc-900/50 border border-zinc-800 rounded-lg px-4 py-3 mb-4 text-[11px] text-zinc-500 font-mono leading-relaxed">
+      <span class="text-zinc-600">DIAG:</span> checking...
     </div>
 
     <!-- Drop Zone -->
@@ -144,6 +150,7 @@
     const btnReset = $("#btnReset");
     const btnCopy = $("#btnCopy");
     const banner = $("#banner");
+    const debugPanel = $("#debugPanel");
     const errorBox = $("#errorBox");
     const resultSection = $("#resultSection");
     const resultText = $("#resultText");
@@ -157,14 +164,47 @@
     let apiReady = false;
 
     // ── API Check ──
+    // Chrome 138+ では window.ai.languageModel ではなくグローバル LanguageModel を使う
+    // availability() は "available" | "downloadable" | "downloading" | "unavailable" を返す
+    const diag = (msg) => { debugPanel.innerHTML += `<br>${msg}`; console.log("[OCR]", msg); };
     (async () => {
+      const lines = [];
+      lines.push(`typeof LanguageModel = "${typeof LanguageModel}"`);
+      lines.push(`"ai" in window = ${("ai" in window)}`);
+      if ("ai" in window) {
+        lines.push(`typeof window.ai.languageModel = "${typeof window.ai?.languageModel}"`);
+      }
+      debugPanel.innerHTML = `<span class="text-zinc-600">DIAG:</span> ${lines.join(" · ")}`;
+
       try {
-        if (!("ai" in window) || !window.ai?.languageModel) throw new Error();
-        const caps = await window.ai.languageModel.capabilities();
-        if (caps.available === "no") throw new Error();
-        setStatus("ready");
-        apiReady = true;
-      } catch {
+        if (typeof LanguageModel !== "undefined") {
+          const avail = await LanguageModel.availability();
+          diag(`LanguageModel.availability() → "${avail}"`);
+          if (avail === "unavailable") throw new Error(`availability=${avail}`);
+          if (avail === "downloading") {
+            setStatus("downloading");
+          } else {
+            setStatus("ready");
+          }
+          apiReady = true;
+          return;
+        }
+
+        // fallback: 古い namespace
+        if ("ai" in window && window.ai?.languageModel) {
+          diag("Fallback: window.ai.languageModel detected");
+          window.__useLegacyAI = true;
+          const caps = await window.ai.languageModel.capabilities();
+          diag(`capabilities().available → "${caps.available}"`);
+          if (caps.available === "no") throw new Error("Legacy API: available=no");
+          setStatus("ready");
+          apiReady = true;
+          return;
+        }
+
+        throw new Error("No API found");
+      } catch (e) {
+        diag(`ERROR: ${e.message}`);
         setStatus("unavailable");
         banner.classList.remove("hidden");
       }
@@ -174,6 +214,7 @@
       const map = {
         checking:    { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "CHECKING..." },
         ready:       { bg: "bg-green-500",  shadow: "shadow-[0_0_8px_rgba(34,197,94,0.4)]",  label: "API READY" },
+        downloading: { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "DOWNLOADING MODEL..." },
         unavailable: { bg: "bg-red-500",    shadow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]",  label: "UNAVAILABLE" },
       };
       const m = map[s] || map.checking;
@@ -229,10 +270,20 @@
       try {
         if (session) { session.destroy(); session = null; }
 
-        session = await window.ai.languageModel.create({
-          systemPrompt:
-            "You are a precise OCR engine. Extract ALL text from the provided image exactly as it appears. Preserve line breaks and layout structure. Output only the extracted text, nothing else. If no text is found, respond with '(テキストが見つかりません)'.",
-        });
+        const sysPrompt = "You are a precise OCR engine. Extract ALL text from the provided image exactly as it appears. Preserve line breaks and layout structure. Output only the extracted text, nothing else. If no text is found, respond with '(テキストが見つかりません)'.";
+
+        // 新 API (LanguageModel global) or レガシー (window.ai.languageModel)
+        const createSession = async (opts) => {
+          if (window.__useLegacyAI) {
+            return await window.ai.languageModel.create({ systemPrompt: sysPrompt, ...opts });
+          }
+          return await LanguageModel.create({
+            initialPrompts: [{ role: "system", content: sysPrompt }],
+            ...opts,
+          });
+        };
+
+        session = await createSession();
 
         let response;
         try {
@@ -242,12 +293,11 @@
             { type: "image", content: currentFile },
           ]);
         } catch (e) {
+          console.warn("[OCR] Multimodal failed, trying base64 fallback:", e.message);
           // Fallback: base64 text-only prompt
           const base64 = await fileToBase64(currentFile);
           if (session) session.destroy();
-          session = await window.ai.languageModel.create({
-            systemPrompt: "You are a precise OCR engine. Extract ALL text exactly as it appears. Preserve layout. Output only extracted text.",
-          });
+          session = await createSession();
           response = await session.prompt(
             `以下はbase64エンコードされた画像です。この画像内のすべてのテキストを抽出してください:\n\n${base64}`
           );
