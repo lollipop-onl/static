@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Face Detect</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script>
     tailwind.config = {
@@ -168,7 +167,35 @@
     let lastResult = null;
 
     const FACE_COLORS = ["#a78bfa", "#22d3ee", "#34d399", "#fb923c", "#f472b6", "#facc15", "#60a5fa", "#e879f9"];
-    const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/";
+
+    // ── Face Detection Worker ──
+    const faceWorker = new Worker("face-detect/worker.js");
+    let workerResolve = null;
+    let workerReject = null;
+
+    faceWorker.onmessage = (e) => {
+      const { type, faces, message } = e.data;
+      if (type === "loaded") {
+        diag("Worker: models loaded");
+        faceApiReady = true;
+        updateStatus();
+      } else if (type === "detected") {
+        if (workerResolve) workerResolve(faces);
+        workerResolve = workerReject = null;
+      } else if (type === "error") {
+        diag("Worker error: " + message);
+        if (workerReject) workerReject(new Error(message));
+        workerResolve = workerReject = null;
+      }
+    };
+
+    function detectFacesInWorker(imageBitmap) {
+      return new Promise((resolve, reject) => {
+        workerResolve = resolve;
+        workerReject = reject;
+        faceWorker.postMessage({ type: "detect", imageBitmap }, [imageBitmap]);
+      });
+    }
 
     // ── Utility ──
     function esc(str) {
@@ -211,6 +238,18 @@
       statusLabel.textContent = m.label;
     }
 
+    function updateStatus() {
+      diag("faceApi=" + faceApiReady + " promptApi=" + promptApiReady);
+      if (faceApiReady && promptApiReady) {
+        setStatus("ready");
+      } else if (faceApiReady) {
+        setStatus("partial");
+        banner.classList.remove("hidden");
+      } else {
+        setStatus("loading");
+      }
+    }
+
     // ── Initialize ──
     (async () => {
       debugPanel.textContent = "";
@@ -218,17 +257,11 @@
       debugPanel.appendChild(diagLabel);
       debugPanel.appendChild(document.createTextNode("initializing..."));
 
-      // Load face-api.js models
-      try {
-        diag("Loading face-api.js models...");
-        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-        diag("tinyFaceDetector loaded");
-        faceApiReady = true;
-      } catch (e) {
-        diag("face-api.js load failed: " + e.message);
-      }
+      // Load face-api.js models in Worker (non-blocking)
+      diag("Loading face-api.js models in Worker...");
+      faceWorker.postMessage({ type: "load" });
 
-      // Check Prompt API
+      // Check Prompt API (parallel, on main thread)
       try {
         if (typeof LanguageModel !== "undefined") {
           const avail = await LanguageModel.availability();
@@ -248,16 +281,7 @@
         diag("Prompt API check failed: " + e.message);
       }
 
-      diag("faceApi=" + faceApiReady + " promptApi=" + promptApiReady);
-
-      if (faceApiReady && promptApiReady) {
-        setStatus("ready");
-      } else if (faceApiReady) {
-        setStatus("partial");
-        banner.classList.remove("hidden");
-      } else {
-        setStatus("unavailable");
-      }
+      updateStatus();
     })();
 
     // ── File Handling ──
@@ -413,11 +437,11 @@
       const elapsed = () => ((Date.now() - start) / 1000).toFixed(1);
 
       try {
-        // Step 1: face-api.js で顔検出
-        diag("Running face-api.js detection...");
-        const imgEl = preview;
-        const detections = await faceapi.detectAllFaces(imgEl, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.4 }));
-        diag("Detected " + detections.length + " face(s) via face-api.js");
+        // Step 1: face-api.js で顔検出 (Worker)
+        diag("Sending image to Worker for detection...");
+        const bitmap = await createImageBitmap(currentFile);
+        const detections = await detectFacesInWorker(bitmap);
+        diag("Detected " + detections.length + " face(s) via Worker");
 
         if (detections.length === 0) {
           clearInterval(timerId);
@@ -438,15 +462,15 @@
           diag("Attributes: " + attributes.length + " result(s)");
         }
 
-        // 結果をマージ
+        // 結果をマージ (detections は Worker からのプレーンオブジェクト)
         const mergedResults = detections.map((det, i) => ({
           box: det.box,
           score: det.score,
           attrs: attributes[i] || { age: "\u2014", gender: "\u2014", expression: "\u2014", features: [] },
         }));
 
+        // drawBoundingBoxes 用にも保持
         clearInterval(timerId);
-        lastResult = { detections, mergedResults };
         showResult(mergedResults, elapsed());
       } catch (e) {
         clearInterval(timerId);
