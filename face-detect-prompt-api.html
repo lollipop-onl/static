@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Face Detect</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/dist/face-api.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script>
     tailwind.config = {
@@ -45,12 +46,12 @@
       <div class="w-8 h-8 border-2 border-violet-400 rounded-md grid place-items-center text-sm">&#x1f464;</div>
       <div>
         <h1 class="text-base font-semibold tracking-widest text-zinc-50">FACE DETECT</h1>
-        <p class="text-[10px] text-zinc-500 tracking-[0.15em] uppercase">Chrome Built-in AI &middot; Prompt API</p>
+        <p class="text-[10px] text-zinc-500 tracking-[0.15em] uppercase">face-api.js + Prompt API</p>
       </div>
     </div>
     <div class="flex items-center gap-2">
       <div id="statusDot" class="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.4)]"></div>
-      <span id="statusLabel" class="text-[11px] text-zinc-400">CHECKING...</span>
+      <span id="statusLabel" class="text-[11px] text-zinc-400">LOADING...</span>
     </div>
   </header>
 
@@ -59,18 +60,17 @@
     <!-- Unsupported Banner -->
     <div id="banner" class="hidden bg-[#1c1008] border border-yellow-800 rounded-lg px-5 py-4 mb-6 text-[13px] leading-relaxed">
       <p class="font-semibold text-yellow-300 mb-1">&#x26a0; Prompt API が利用できません</p>
-      <p class="text-zinc-400 mb-2">Chrome Canary / Dev (v138+) で以下のフラグを有効にしてください:</p>
+      <p class="text-zinc-400 mb-2">顔検出は動作しますが、属性分析（年齢・性別・表情）には Prompt API が必要です。</p>
       <code class="block bg-[#0a0a0b] rounded px-3 py-2 text-violet-400 text-xs break-all leading-relaxed">
         chrome://flags/#optimization-guide-on-device-model &rarr; Enabled<br>
         chrome://flags/#prompt-api-for-gemini-nano &rarr; Enabled<br>
         chrome://flags/#prompt-api-for-gemini-nano-multimodal-input &rarr; Enabled
       </code>
-      <p class="text-zinc-600 text-[11px] mt-2">フラグ有効後、chrome://components で Optimization Guide On Device Model をダウンロードしてください。</p>
     </div>
 
     <!-- Debug panel -->
     <div id="debugPanel" class="bg-zinc-900/50 border border-zinc-800 rounded-lg px-4 py-3 mb-4 text-[11px] text-zinc-500 font-mono leading-relaxed">
-      <span class="text-zinc-600">DIAG:</span> checking...
+      <span class="text-zinc-600">DIAG:</span> initializing...
     </div>
 
     <!-- Drop Zone -->
@@ -91,7 +91,7 @@
         <div id="scanOverlay" class="hidden absolute inset-0 bg-[#0a0a0b99] grid place-items-center">
           <div class="scan-line"></div>
           <div class="text-center">
-            <div class="text-[13px] text-violet-400" style="animation:blink 1s infinite">ANALYZING...</div>
+            <div id="overlayLabel" class="text-[13px] text-violet-400" style="animation:blink 1s infinite">DETECTING...</div>
             <div id="overlayTimer" class="text-2xl font-light mt-1">0.0s</div>
           </div>
         </div>
@@ -132,9 +132,8 @@
 
     <!-- Footer -->
     <div class="mt-12 pt-4 border-t border-zinc-900 text-[11px] text-zinc-700 leading-loose">
-      <p>LanguageModel (Gemini Nano) を使用。処理はすべてローカルで実行されます。</p>
-      <p class="mt-1">画像は自動的に 1024&rarr;768&rarr;512&rarr;384px にリサイズしてリトライします。</p>
-      <p class="mt-1">顔の座標はAIによる推定のため、実際の位置と多少ずれる場合があります。</p>
+      <p>顔検出: face-api.js (TensorFlow.js) / 属性分析: LanguageModel (Gemini Nano)</p>
+      <p class="mt-1">処理はすべてローカルで実行されます。画像がサーバーに送信されることはありません。</p>
     </div>
   </main>
 
@@ -147,6 +146,7 @@
     const placeholder = $("#placeholder");
     const overlayCanvas = $("#overlayCanvas");
     const scanOverlay = $("#scanOverlay");
+    const overlayLabel = $("#overlayLabel");
     const overlayTimer = $("#overlayTimer");
     const btnRun = $("#btnRun");
     const btnReset = $("#btnReset");
@@ -163,12 +163,14 @@
     let currentFile = null;
     let session = null;
     let timerId = null;
-    let apiReady = false;
-    let lastJsonResult = null;
+    let faceApiReady = false;
+    let promptApiReady = false;
+    let lastResult = null;
 
     const FACE_COLORS = ["#a78bfa", "#22d3ee", "#34d399", "#fb923c", "#f472b6", "#facc15", "#60a5fa", "#e879f9"];
+    const MODEL_URL = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.14/model/";
 
-    // ── Utility: escape text for safe DOM insertion ──
+    // ── Utility ──
     function esc(str) {
       const div = document.createElement("div");
       div.textContent = str;
@@ -180,7 +182,6 @@
       for (const [k, v] of Object.entries(attrs)) {
         if (k === "className") el.className = v;
         else if (k === "textContent") el.textContent = v;
-        else if (k.startsWith("style.")) el.style[k.slice(6)] = v;
         else el.setAttribute(k, v);
       }
       for (const child of children) {
@@ -190,7 +191,6 @@
       return el;
     }
 
-    // ── API Check ──
     const diag = (msg) => {
       const br = document.createElement("br");
       const text = document.createTextNode(msg);
@@ -199,58 +199,66 @@
       console.log("[FaceDetect]", msg);
     };
 
+    function setStatus(s) {
+      const map = {
+        loading:     { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "LOADING MODELS..." },
+        ready:       { bg: "bg-green-500",  shadow: "shadow-[0_0_8px_rgba(34,197,94,0.4)]",  label: "READY" },
+        partial:     { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "DETECT ONLY (NO AI)" },
+        unavailable: { bg: "bg-red-500",    shadow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]",  label: "UNAVAILABLE" },
+      };
+      const m = map[s] || map.loading;
+      statusDot.className = "w-2 h-2 rounded-full " + m.bg + " " + m.shadow;
+      statusLabel.textContent = m.label;
+    }
+
+    // ── Initialize ──
     (async () => {
-      const lines = [];
-      lines.push("typeof LanguageModel = \"" + typeof LanguageModel + "\"");
-      lines.push("\"ai\" in window = " + ("ai" in window));
-      if ("ai" in window) {
-        lines.push("typeof window.ai.languageModel = \"" + typeof window.ai?.languageModel + "\"");
-      }
       debugPanel.textContent = "";
       const diagLabel = createEl("span", { className: "text-zinc-600", textContent: "DIAG: " });
       debugPanel.appendChild(diagLabel);
-      debugPanel.appendChild(document.createTextNode(lines.join(" \u00b7 ")));
+      debugPanel.appendChild(document.createTextNode("initializing..."));
 
+      // Load face-api.js models
+      try {
+        diag("Loading face-api.js models...");
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        diag("tinyFaceDetector loaded");
+        faceApiReady = true;
+      } catch (e) {
+        diag("face-api.js load failed: " + e.message);
+      }
+
+      // Check Prompt API
       try {
         if (typeof LanguageModel !== "undefined") {
           const avail = await LanguageModel.availability();
           diag("LanguageModel.availability() \u2192 \"" + avail + "\"");
-          if (avail === "unavailable") throw new Error("availability=" + avail);
-          setStatus(avail === "downloading" ? "downloading" : "ready");
-          apiReady = true;
-          return;
-        }
-
-        if ("ai" in window && window.ai?.languageModel) {
+          if (avail !== "unavailable") {
+            promptApiReady = true;
+          }
+        } else if ("ai" in window && window.ai?.languageModel) {
           diag("Fallback: window.ai.languageModel detected");
           window.__useLegacyAI = true;
           const caps = await window.ai.languageModel.capabilities();
-          diag("capabilities().available \u2192 \"" + caps.available + "\"");
-          if (caps.available === "no") throw new Error("Legacy API: available=no");
-          setStatus("ready");
-          apiReady = true;
-          return;
+          if (caps.available !== "no") {
+            promptApiReady = true;
+          }
         }
-
-        throw new Error("No API found");
       } catch (e) {
-        diag("ERROR: " + e.message);
-        setStatus("unavailable");
+        diag("Prompt API check failed: " + e.message);
+      }
+
+      diag("faceApi=" + faceApiReady + " promptApi=" + promptApiReady);
+
+      if (faceApiReady && promptApiReady) {
+        setStatus("ready");
+      } else if (faceApiReady) {
+        setStatus("partial");
         banner.classList.remove("hidden");
+      } else {
+        setStatus("unavailable");
       }
     })();
-
-    function setStatus(s) {
-      const map = {
-        checking:    { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "CHECKING..." },
-        ready:       { bg: "bg-green-500",  shadow: "shadow-[0_0_8px_rgba(34,197,94,0.4)]",  label: "API READY" },
-        downloading: { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "DOWNLOADING MODEL..." },
-        unavailable: { bg: "bg-red-500",    shadow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]",  label: "UNAVAILABLE" },
-      };
-      const m = map[s] || map.checking;
-      statusDot.className = "w-2 h-2 rounded-full " + m.bg + " " + m.shadow;
-      statusLabel.textContent = m.label;
-    }
 
     // ── File Handling ──
     dropZone.addEventListener("click", () => { if (!btnRun.disabled || !currentFile) fileInput.click(); });
@@ -273,7 +281,7 @@
         previewWrap.classList.remove("hidden");
         placeholder.classList.add("hidden");
         btnReset.classList.remove("hidden");
-        btnRun.disabled = !apiReady;
+        btnRun.disabled = !faceApiReady;
         btnRun.textContent = "DETECT FACES";
       };
       reader.readAsDataURL(file);
@@ -281,37 +289,29 @@
 
     // ── Canvas ──
     function clearCanvas() {
-      const ctx = overlayCanvas.getContext("2d");
       overlayCanvas.width = 0;
       overlayCanvas.height = 0;
     }
 
-    // object-contain の実際の描画領域を計算
     function getRenderedImageRect(img) {
       const elemW = img.clientWidth;
       const elemH = img.clientHeight;
       const natW = img.naturalWidth;
       const natH = img.naturalHeight;
       if (!natW || !natH) return { x: 0, y: 0, w: elemW, h: elemH };
-
       const scale = Math.min(elemW / natW, elemH / natH);
       const renderedW = natW * scale;
       const renderedH = natH * scale;
-      const offsetX = (elemW - renderedW) / 2;
-      const offsetY = (elemH - renderedH) / 2;
-      return { x: offsetX, y: offsetY, w: renderedW, h: renderedH };
+      return { x: (elemW - renderedW) / 2, y: (elemH - renderedH) / 2, w: renderedW, h: renderedH };
     }
 
-    function drawBoundingBoxes(faces) {
+    function drawBoundingBoxes(detections) {
       const img = preview;
       const elemRect = img.getBoundingClientRect();
       const wrapRect = previewWrap.getBoundingClientRect();
       const rendered = getRenderedImageRect(img);
-
-      diag("[draw] elem=" + Math.round(elemRect.width) + "x" + Math.round(elemRect.height)
-        + " nat=" + img.naturalWidth + "x" + img.naturalHeight
-        + " rendered=" + Math.round(rendered.w) + "x" + Math.round(rendered.h)
-        + " offset=(" + Math.round(rendered.x) + "," + Math.round(rendered.y) + ")");
+      const natW = img.naturalWidth;
+      const natH = img.naturalHeight;
 
       overlayCanvas.width = elemRect.width;
       overlayCanvas.height = elemRect.height;
@@ -323,13 +323,14 @@
       const ctx = overlayCanvas.getContext("2d");
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-      faces.forEach((face, i) => {
+      detections.forEach((det, i) => {
         const color = FACE_COLORS[i % FACE_COLORS.length];
-        const x = rendered.x + face.x * rendered.w;
-        const y = rendered.y + face.y * rendered.h;
-        const w = face.w * rendered.w;
-        const h = face.h * rendered.h;
-        diag("[draw] face#" + (i+1) + " ai=(" + face.x.toFixed(3) + "," + face.y.toFixed(3) + "," + face.w.toFixed(3) + "," + face.h.toFixed(3) + ") → px=(" + Math.round(x) + "," + Math.round(y) + "," + Math.round(w) + "," + Math.round(h) + ")");
+        // det.box has pixel coords relative to natural image size
+        const box = det.box;
+        const x = rendered.x + (box.x / natW) * rendered.w;
+        const y = rendered.y + (box.y / natH) * rendered.h;
+        const w = (box.width / natW) * rendered.w;
+        const h = (box.height / natH) * rendered.h;
 
         // 半透明背景
         ctx.fillStyle = color + "15";
@@ -365,7 +366,7 @@
       });
     }
 
-    // ── Resize ──
+    // ── Resize for Prompt API ──
     function resizeImage(file, maxDim = 1024, quality = 0.8) {
       return new Promise((resolve, reject) => {
         const img = new Image();
@@ -394,10 +395,6 @@
     // ── Detection ──
     btnRun.addEventListener("click", runDetect);
 
-    const SYSTEM_PROMPT = "You are a precise face detection and analysis engine. Detect ALL human faces in the provided image.\n\nFor each face, return a JSON array. Each element must have:\n- \"x\": x-coordinate of the TOP-LEFT corner of the face bounding box, as a ratio from 0.0 (left edge of image) to 1.0 (right edge of image)\n- \"y\": y-coordinate of the TOP-LEFT corner of the face bounding box, as a ratio from 0.0 (top edge of image) to 1.0 (bottom edge of image)\n- \"w\": width of the bounding box as a ratio of total image width (typically 0.05-0.3 for a face)\n- \"h\": height of the bounding box as a ratio of total image height (typically 0.05-0.3 for a face)\n- \"age\": estimated age range in Japanese (e.g. \"20代前半\", \"30代後半\")\n- \"gender\": gender in Japanese (\"男性\" or \"女性\")\n- \"expression\": facial expression in Japanese (e.g. \"笑顔\", \"真顔\", \"驚き\")\n- \"features\": array of notable features in Japanese (e.g. [\"メガネ\", \"ヒゲ\", \"帽子\"])\n\nIMPORTANT: The bounding box should tightly wrap ONLY the face (forehead to chin, ear to ear). x,y is the TOP-LEFT corner, NOT the center. Keep w and h small — a face is usually 5-20% of image width.\n\nOutput ONLY valid JSON array. No markdown, no explanation, no code fences. If no faces found, output [].";
-
-    const USER_PROMPT = "Detect all human faces in this image.\n\nRules:\n- x, y = TOP-LEFT corner of the face bounding box (ratio 0.0-1.0)\n- w, h = size of bounding box (ratio 0.0-1.0). A face is typically 0.05-0.2 of image width.\n- The box must tightly wrap the face only (forehead to chin, ear to ear). Do NOT include body.\n- age, gender, expression, features must be in Japanese.\n\nReturn ONLY a JSON array (no markdown, no code fences):\n[{\"x\":0.25,\"y\":0.1,\"w\":0.1,\"h\":0.12,\"age\":\"30代\",\"gender\":\"男性\",\"expression\":\"笑顔\",\"features\":[\"メガネ\"]}]\n\nIf no faces, return [].";
-
     async function runDetect() {
       if (!currentFile) return;
       btnRun.disabled = true;
@@ -407,23 +404,78 @@
       clearCanvas();
 
       scanOverlay.classList.remove("hidden");
+      overlayLabel.textContent = "DETECTING FACES...";
       preview.style.opacity = "0.5";
       const start = Date.now();
       timerId = setInterval(() => {
         overlayTimer.textContent = ((Date.now() - start) / 1000).toFixed(1) + "s";
       }, 100);
-
       const elapsed = () => ((Date.now() - start) / 1000).toFixed(1);
+
+      try {
+        // Step 1: face-api.js で顔検出
+        diag("Running face-api.js detection...");
+        const imgEl = preview;
+        const detections = await faceapi.detectAllFaces(imgEl, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.4 }));
+        diag("Detected " + detections.length + " face(s) via face-api.js");
+
+        if (detections.length === 0) {
+          clearInterval(timerId);
+          lastResult = { detections: [], attributes: [] };
+          showResult([], elapsed());
+          return;
+        }
+
+        // バウンディングボックス即座に描画
+        requestAnimationFrame(() => drawBoundingBoxes(detections));
+
+        // Step 2: Prompt API で属性分析
+        let attributes = [];
+        if (promptApiReady) {
+          overlayLabel.textContent = "ANALYZING ATTRIBUTES...";
+          diag("Running Prompt API attribute analysis...");
+          attributes = await analyzeAttributes(detections.length);
+          diag("Attributes: " + attributes.length + " result(s)");
+        }
+
+        // 結果をマージ
+        const mergedResults = detections.map((det, i) => ({
+          box: det.box,
+          score: det.score,
+          attrs: attributes[i] || { age: "\u2014", gender: "\u2014", expression: "\u2014", features: [] },
+        }));
+
+        clearInterval(timerId);
+        lastResult = { detections, mergedResults };
+        showResult(mergedResults, elapsed());
+      } catch (e) {
+        clearInterval(timerId);
+        showError("検出失敗: " + e.message);
+        diag("Error: " + e.message);
+      } finally {
+        scanOverlay.classList.add("hidden");
+        preview.style.opacity = "1";
+        btnRun.disabled = false;
+        btnReset.disabled = false;
+        btnRun.textContent = "DETECT FACES";
+      }
+    }
+
+    // ── Prompt API Attribute Analysis ──
+    const ATTR_SYSTEM = "You are a face attribute analysis engine. The user will provide an image containing faces and tell you how many faces were detected. For each face (numbered left to right), estimate age range, gender, expression, and notable features. Output ONLY a valid JSON array. No markdown, no code fences.";
+
+    async function analyzeAttributes(faceCount) {
+      const userPrompt = "This image contains " + faceCount + " human face(s), numbered #1 to #" + faceCount + " from left to right.\n\nFor each face, provide:\n- age: estimated age range in Japanese (e.g. \"20代前半\")\n- gender: \"男性\" or \"女性\"\n- expression: facial expression in Japanese (e.g. \"笑顔\", \"真顔\")\n- features: array of notable features in Japanese (e.g. [\"メガネ\", \"長髪\"])\n\nReturn ONLY a JSON array with " + faceCount + " element(s), ordered left to right:\n[{\"age\":\"20代\",\"gender\":\"女性\",\"expression\":\"笑顔\",\"features\":[\"長髪\"]}]";
 
       try {
         if (session) { session.destroy(); session = null; }
 
         const createSession = async () => {
           if (window.__useLegacyAI) {
-            return await window.ai.languageModel.create({ systemPrompt: SYSTEM_PROMPT });
+            return await window.ai.languageModel.create({ systemPrompt: ATTR_SYSTEM });
           }
           return await LanguageModel.create({
-            initialPrompts: [{ role: "system", content: SYSTEM_PROMPT }],
+            initialPrompts: [{ role: "system", content: ATTR_SYSTEM }],
             expectedInputs: [{ type: "image" }],
           });
         };
@@ -437,183 +489,113 @@
             if (session) session.destroy();
             session = await createSession();
 
-            const maxTok = session.maxTokens ?? session.contextWindow ?? "?";
-            const left = session.tokensLeft ?? "?";
-            diag("Session: maxTokens=" + maxTok + ", tokensLeft=" + left);
-
-            const prompt = [
+            response = await session.prompt([
               { role: "user", content: [
-                { type: "text",  value: USER_PROMPT },
+                { type: "text", value: userPrompt },
                 { type: "image", value: resizedFile },
               ]}
-            ];
-
-            response = await session.prompt(prompt);
-            diag("Success at maxDim=" + maxDim);
+            ]);
+            diag("Attribute analysis success at maxDim=" + maxDim);
             break;
           } catch (e) {
-            diag("maxDim=" + maxDim + " failed: " + e.message);
+            diag("Attribute maxDim=" + maxDim + " failed: " + e.message);
             if (e.message?.toLowerCase().includes("too large") ||
                 e.message?.toLowerCase().includes("quota") ||
                 e.message?.toLowerCase().includes("token") ||
                 e.name === "QuotaExceededError") {
               continue;
             }
-            if (e.message?.toLowerCase().includes("type") ||
-                e.message?.toLowerCase().includes("image") ||
-                e.message?.toLowerCase().includes("support")) {
-              try {
-                diag("Trying legacy multimodal format...");
-                if (session) session.destroy();
-                session = await createSession();
-                const resizedFile2 = await resizeImage(currentFile, maxDim);
-                response = await session.prompt([
-                  { type: "text",  content: USER_PROMPT },
-                  { type: "image", content: resizedFile2 },
-                ]);
-                break;
-              } catch (e2) {
-                diag("Legacy format also failed: " + e2.message);
-              }
+            // Try legacy format
+            try {
+              if (session) session.destroy();
+              session = await createSession();
+              const resizedFile2 = await resizeImage(currentFile, maxDim);
+              response = await session.prompt([
+                { type: "text", content: userPrompt },
+                { type: "image", content: resizedFile2 },
+              ]);
+              break;
+            } catch (e2) {
+              diag("Legacy format failed: " + e2.message);
             }
             throw e;
           }
         }
 
-        if (!response) {
-          throw new Error("画像が大きすぎます。384px以下にリサイズしても収まりませんでした。");
-        }
-
-        diag("Raw response: " + response.substring(0, 200) + "...");
-
-        let faces = parseJSON(response);
-
-        // JSON パース失敗時リトライ
-        if (!faces) {
-          diag("JSON parse failed, retrying with stricter prompt...");
-          const retryResponse = await session.prompt([
-            { role: "user", content: [
-              { type: "text", value: "前の回答が正しい JSON ではありませんでした。以下のルールを厳守してください:\n1. 出力は [ で始まり ] で終わる JSON 配列のみ\n2. 各要素は { } で囲まれたオブジェクト（二重の }} は禁止）\n3. マークダウン・コードブロック・説明文は一切不要\n4. 例: [{\"x\":0.3,\"y\":0.2,\"w\":0.2,\"h\":0.3,\"age\":\"20代\",\"gender\":\"女性\",\"expression\":\"笑顔\",\"features\":[\"長髪\"]}]" },
-            ]}
-          ]);
-          diag("Retry response: " + retryResponse.substring(0, 200) + "...");
-          faces = parseJSON(retryResponse);
-        }
-
-        if (!faces) {
-          throw new Error("AI のレスポンスを JSON としてパースできませんでした。");
-        }
-
-        clearInterval(timerId);
-        lastJsonResult = faces;
-        showResult(faces, elapsed());
+        if (!response) return [];
+        diag("Attr response: " + response.substring(0, 200));
+        return parseJSON(response) || [];
       } catch (e) {
-        clearInterval(timerId);
-        showError("検出失敗: " + e.message);
-      } finally {
-        scanOverlay.classList.add("hidden");
-        preview.style.opacity = "1";
-        btnRun.disabled = false;
-        btnReset.disabled = false;
-        btnRun.textContent = "DETECT FACES";
+        diag("Attribute analysis failed: " + e.message);
+        return [];
       }
     }
 
+    // ── JSON Parser (robust) ──
     function parseJSON(text) {
-      diag("[parseJSON] input (" + text.length + " chars): " + text.substring(0, 300));
-
-      // Step 1: strip markdown fences and trim
       let cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim();
-      diag("[parseJSON] step1 cleaned: " + cleaned.substring(0, 300));
-
-      // Step 2: extract array portion
       const arrMatch = cleaned.match(/\[[\s\S]*\]/);
-      if (arrMatch) {
-        cleaned = arrMatch[0];
-        diag("[parseJSON] step2 array extracted: " + cleaned.substring(0, 300));
-      } else {
-        diag("[parseJSON] step2 no array found");
-      }
+      if (arrMatch) cleaned = arrMatch[0];
 
-      // Step 3: try direct parse
       try {
         const parsed = JSON.parse(cleaned);
-        if (Array.isArray(parsed)) { diag("[parseJSON] step3 direct parse OK, " + parsed.length + " items"); return parsed; }
-      } catch (e) { diag("[parseJSON] step3 direct parse failed: " + e.message); }
+        if (Array.isArray(parsed)) return parsed;
+      } catch { /* continue */ }
 
-      // Step 4: repair common AI JSON mistakes
+      // repair
       let repaired = cleaned;
-      // fix `}}` → `}` (but not inside strings — good enough heuristic)
       repaired = repaired.replace(/\}\s*\}/g, "}");
-      // fix `]]` → `]`
       repaired = repaired.replace(/\]\s*\]/g, "]");
-      // fix trailing commas before } or ]
       repaired = repaired.replace(/,\s*([}\]])/g, "$1");
-      diag("[parseJSON] step4 after bracket/comma fix: ..." + repaired.slice(-80));
-
-      // ensure outer brackets
       if (!repaired.startsWith("[")) repaired = "[" + repaired;
       if (!repaired.endsWith("]")) repaired = repaired + "]";
-
-      // rebalance braces
       let openBraces = (repaired.match(/\{/g) || []).length;
       let closeBraces = (repaired.match(/\}/g) || []).length;
-      diag("[parseJSON] step4 braces: { x" + openBraces + " } x" + closeBraces);
       if (openBraces > closeBraces) {
         repaired = repaired.slice(0, -1) + "}".repeat(openBraces - closeBraces) + "]";
       } else if (closeBraces > openBraces) {
-        // remove excess closing braces (from right, before , or ])
         let excess = closeBraces - openBraces;
         repaired = repaired.replace(/\}(?=\s*[,\]])/g, (m) => {
           if (excess > 0) { excess--; return ""; }
           return m;
         });
       }
-      diag("[parseJSON] step4 repaired: " + repaired.substring(0, 300));
 
       try {
         const parsed = JSON.parse(repaired);
-        if (Array.isArray(parsed)) { diag("[parseJSON] step4 repair parse OK, " + parsed.length + " items"); return parsed; }
-      } catch (e) { diag("[parseJSON] step4 repair parse failed: " + e.message); }
+        if (Array.isArray(parsed)) return parsed;
+      } catch { /* continue */ }
 
-      // Step 5: last resort — extract individual objects and parse each
-      diag("[parseJSON] step5 trying per-object extraction");
+      // per-object extraction
       const objMatches = cleaned.matchAll(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
       const results = [];
       for (const m of objMatches) {
         try {
-          let obj = m[0].replace(/,\s*([}\]])/g, "$1");
-          results.push(JSON.parse(obj));
-          diag("[parseJSON] step5 extracted object OK");
-        } catch (e) { diag("[parseJSON] step5 object failed: " + e.message + " | " + m[0].substring(0, 100)); }
+          results.push(JSON.parse(m[0].replace(/,\s*([}\]])/g, "$1")));
+        } catch { /* skip */ }
       }
-      if (results.length > 0) { diag("[parseJSON] step5 extracted " + results.length + " face(s)"); return results; }
-
-      diag("[parseJSON] all steps failed, returning null");
-      return null;
+      return results.length > 0 ? results : null;
     }
 
-    // ── Results (DOM-based, no innerHTML with untrusted data) ──
-    function showResult(faces, sec) {
-      resultMeta.textContent = faces.length + " face" + (faces.length !== 1 ? "s" : "") + " \u00b7 " + sec + "s";
+    // ── Results ──
+    function showResult(results, sec) {
+      resultMeta.textContent = results.length + " face" + (results.length !== 1 ? "s" : "") + " \u00b7 " + sec + "s";
       faceCards.replaceChildren();
 
-      if (faces.length === 0) {
-        const empty = createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg px-5 py-8 text-center" }, [
+      if (results.length === 0) {
+        faceCards.appendChild(createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg px-5 py-8 text-center" }, [
           createEl("p", { className: "text-zinc-500 text-sm", textContent: "顔が検出されませんでした" }),
-        ]);
-        faceCards.appendChild(empty);
+        ]));
         resultSection.classList.remove("hidden");
         return;
       }
 
-      requestAnimationFrame(() => drawBoundingBoxes(faces));
-
-      faces.forEach((face, i) => {
+      results.forEach((r, i) => {
         const color = FACE_COLORS[i % FACE_COLORS.length];
+        const attrs = r.attrs || {};
+        const score = r.score ? " (" + (r.score * 100).toFixed(0) + "%)" : "";
 
-        // Feature tags
-        const featureTags = (face.features || []).map(f => {
+        const featureTags = (attrs.features || []).map(f => {
           const tag = createEl("span", { textContent: esc(String(f)) });
           tag.className = "inline-block px-2 py-0.5 rounded text-[11px] border";
           tag.style.borderColor = color + "40";
@@ -622,32 +604,24 @@
           return tag;
         });
 
-        const featureWrap = createEl("div", { className: "mt-3 flex flex-wrap gap-1.5" }, featureTags);
-
-        // Attribute grid
         const grid = createEl("div", { className: "grid grid-cols-3 gap-y-2.5 gap-x-6 text-[13px]" }, [
-          createAttrCell("Age", face.age),
-          createAttrCell("Gender", face.gender),
-          createAttrCell("Expression", face.expression),
+          createAttrCell("Age", attrs.age),
+          createAttrCell("Gender", attrs.gender),
+          createAttrCell("Expression", attrs.expression),
         ]);
 
-        // Label
         const label = createEl("div", { className: "flex items-center gap-2 mb-3" }, [
-          createEl("span", { className: "text-xs font-semibold tracking-widest", textContent: "FACE #" + (i + 1) }),
+          createEl("span", { className: "text-xs font-semibold tracking-widest", textContent: "FACE #" + (i + 1) + score }),
         ]);
         label.firstChild.style.color = color;
 
-        // Card body
         const body = createEl("div", { className: "flex-1 px-5 py-4" }, [label, grid]);
-        if (featureTags.length > 0) body.appendChild(featureWrap);
+        if (featureTags.length > 0) body.appendChild(createEl("div", { className: "mt-3 flex flex-wrap gap-1.5" }, featureTags));
 
-        // Accent bar
         const bar = createEl("div", { className: "w-1.5 shrink-0" });
         bar.style.background = color;
 
-        // Card
-        const card = createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg overflow-hidden flex" }, [bar, body]);
-        faceCards.appendChild(card);
+        faceCards.appendChild(createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg overflow-hidden flex" }, [bar, body]));
       });
 
       resultSection.classList.remove("hidden");
@@ -662,8 +636,8 @@
 
     // リサイズ時にバウンディングボックスを再描画
     window.addEventListener("resize", () => {
-      if (lastJsonResult && lastJsonResult.length > 0) {
-        requestAnimationFrame(() => drawBoundingBoxes(lastJsonResult));
+      if (lastResult && lastResult.detections && lastResult.detections.length > 0) {
+        requestAnimationFrame(() => drawBoundingBoxes(lastResult.detections));
       }
     });
 
@@ -675,8 +649,14 @@
 
     // ── Copy ──
     btnCopy.addEventListener("click", async () => {
-      if (!lastJsonResult) return;
-      await navigator.clipboard.writeText(JSON.stringify(lastJsonResult, null, 2));
+      if (!lastResult) return;
+      const data = (lastResult.mergedResults || []).map((r, i) => ({
+        face: i + 1,
+        score: r.score,
+        box: r.box,
+        ...r.attrs,
+      }));
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
       btnCopy.textContent = "COPIED \u2713";
       btnCopy.classList.add("!border-green-600/30", "!text-green-400", "!bg-green-500/10");
       setTimeout(() => {
@@ -688,7 +668,7 @@
     // ── Reset ──
     btnReset.addEventListener("click", () => {
       currentFile = null;
-      lastJsonResult = null;
+      lastResult = null;
       fileInput.value = "";
       preview.src = "";
       previewWrap.classList.add("hidden");
