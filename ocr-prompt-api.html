@@ -132,7 +132,8 @@
 
     <!-- Footer -->
     <div class="mt-12 pt-4 border-t border-zinc-900 text-[11px] text-zinc-700 leading-loose">
-      <p>window.ai.languageModel (Gemini Nano) を使用。処理はすべてローカルで実行されます。</p>
+      <p>window.ai.languageModel / LanguageModel (Gemini Nano) を使用。処理はすべてローカルで実行されます。</p>
+      <p class="mt-1">画像は自動的に 1024→768→512→384px にリサイズしてリトライします。</p>
       <p class="mt-1">Multimodal 入力には chrome://flags/#prompt-api-for-gemini-nano-multimodal-input の有効化が必要です。</p>
     </div>
   </main>
@@ -251,6 +252,32 @@
     // ── OCR ──
     btnRun.addEventListener("click", runOCR);
 
+    // Canvas で画像をリサイズ (max 長辺 px, JPEG quality)
+    function resizeImage(file, maxDim = 1024, quality = 0.8) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width: w, height: h } = img;
+          if (w > maxDim || h > maxDim) {
+            const scale = maxDim / Math.max(w, h);
+            w = Math.round(w * scale);
+            h = Math.round(h * scale);
+          }
+          const c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          c.getContext("2d").drawImage(img, 0, 0, w, h);
+          c.toBlob((blob) => {
+            if (!blob) return reject(new Error("Canvas toBlob failed"));
+            const resized = new File([blob], file.name, { type: "image/jpeg" });
+            diag(`Resized: ${img.width}x${img.height} → ${w}x${h} (${(blob.size / 1024).toFixed(0)}KB)`);
+            resolve(resized);
+          }, "image/jpeg", quality);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
     async function runOCR() {
       if (!currentFile) return;
       btnRun.disabled = true;
@@ -272,35 +299,77 @@
 
         const sysPrompt = "You are a precise OCR engine. Extract ALL text from the provided image exactly as it appears. Preserve line breaks and layout structure. Output only the extracted text, nothing else. If no text is found, respond with '(テキストが見つかりません)'.";
 
-        // 新 API (LanguageModel global) or レガシー (window.ai.languageModel)
         const createSession = async (opts) => {
           if (window.__useLegacyAI) {
             return await window.ai.languageModel.create({ systemPrompt: sysPrompt, ...opts });
           }
           return await LanguageModel.create({
             initialPrompts: [{ role: "system", content: sysPrompt }],
+            expectedInputs: [{ type: "image" }],
             ...opts,
           });
         };
 
-        session = await createSession();
+        // リサイズ (段階的に小さくしてリトライ)
+        const maxDims = [1024, 768, 512, 384];
+        let response = null;
 
-        let response;
-        try {
-          // Try multimodal prompt
-          response = await session.prompt([
-            { type: "text",  content: "以下の画像からすべてのテキストを正確に抽出してください。レイアウトや改行をできるだけ保持してください。" },
-            { type: "image", content: currentFile },
-          ]);
-        } catch (e) {
-          console.warn("[OCR] Multimodal failed, trying base64 fallback:", e.message);
-          // Fallback: base64 text-only prompt
-          const base64 = await fileToBase64(currentFile);
-          if (session) session.destroy();
-          session = await createSession();
-          response = await session.prompt(
-            `以下はbase64エンコードされた画像です。この画像内のすべてのテキストを抽出してください:\n\n${base64}`
-          );
+        for (const maxDim of maxDims) {
+          try {
+            const resizedFile = await resizeImage(currentFile, maxDim);
+            if (session) session.destroy();
+            session = await createSession();
+
+            // セッション情報を表示
+            const maxTok = session.maxTokens ?? session.contextWindow ?? "?";
+            const left = session.tokensLeft ?? "?";
+            diag(`Session: maxTokens=${maxTok}, tokensLeft=${left}`);
+
+            // 新 API: type + value
+            const prompt = [
+              { role: "user", content: [
+                { type: "text",  value: "以下の画像からすべてのテキストを正確に抽出してください。レイアウトや改行をできるだけ保持してください。" },
+                { type: "image", value: resizedFile },
+              ]}
+            ];
+
+            response = await session.prompt(prompt);
+            diag(`Success at maxDim=${maxDim}`);
+            break;
+          } catch (e) {
+            diag(`maxDim=${maxDim} failed: ${e.message}`);
+            // "Input too large" 系なら次のサイズで再トライ
+            if (e.message?.toLowerCase().includes("too large") ||
+                e.message?.toLowerCase().includes("quota") ||
+                e.message?.toLowerCase().includes("token") ||
+                e.name === "QuotaExceededError") {
+              continue;
+            }
+            // マルチモーダル非対応の場合はフォーマット違いも試す
+            if (e.message?.toLowerCase().includes("type") ||
+                e.message?.toLowerCase().includes("image") ||
+                e.message?.toLowerCase().includes("support")) {
+              // 旧フォーマット (content キー) でリトライ
+              try {
+                diag("Trying legacy multimodal format (content key)...");
+                if (session) session.destroy();
+                session = await createSession();
+                const resizedFile = await resizeImage(currentFile, maxDim);
+                response = await session.prompt([
+                  { type: "text",  content: "以下の画像からすべてのテキストを正確に抽出してください。" },
+                  { type: "image", content: resizedFile },
+                ]);
+                break;
+              } catch (e2) {
+                diag(`Legacy format also failed: ${e2.message}`);
+              }
+            }
+            throw e;
+          }
+        }
+
+        if (!response) {
+          throw new Error("画像が大きすぎます。384px以下にリサイズしても収まりませんでした。");
         }
 
         clearInterval(timerId);
