@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Face Detect</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { mono: ["JetBrains Mono", "SF Mono", "Fira Code", "monospace"] },
+        },
+      },
+    };
+  </script>
+  <style>
+    .scan-line {
+      position: absolute; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, #a78bfa, transparent);
+      animation: scan 2s ease-in-out infinite;
+    }
+    @keyframes scan {
+      0%, 100% { top: 0; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { top: 100%; opacity: 0; }
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .drop-zone:hover { border-color: #a78bfa !important; background: rgba(167,139,250,0.03) !important; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #18181b; }
+    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen bg-[#0a0a0b] text-zinc-200 font-mono">
+
+  <!-- Header -->
+  <header class="border-b border-zinc-800 px-8 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 border-2 border-violet-400 rounded-md grid place-items-center text-sm">&#x1f464;</div>
+      <div>
+        <h1 class="text-base font-semibold tracking-widest text-zinc-50">FACE DETECT</h1>
+        <p class="text-[10px] text-zinc-500 tracking-[0.15em] uppercase">Chrome Built-in AI &middot; Prompt API</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div id="statusDot" class="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.4)]"></div>
+      <span id="statusLabel" class="text-[11px] text-zinc-400">CHECKING...</span>
+    </div>
+  </header>
+
+  <main class="max-w-[960px] mx-auto px-6 py-8">
+
+    <!-- Unsupported Banner -->
+    <div id="banner" class="hidden bg-[#1c1008] border border-yellow-800 rounded-lg px-5 py-4 mb-6 text-[13px] leading-relaxed">
+      <p class="font-semibold text-yellow-300 mb-1">&#x26a0; Prompt API が利用できません</p>
+      <p class="text-zinc-400 mb-2">Chrome Canary / Dev (v138+) で以下のフラグを有効にしてください:</p>
+      <code class="block bg-[#0a0a0b] rounded px-3 py-2 text-violet-400 text-xs break-all leading-relaxed">
+        chrome://flags/#optimization-guide-on-device-model &rarr; Enabled<br>
+        chrome://flags/#prompt-api-for-gemini-nano &rarr; Enabled<br>
+        chrome://flags/#prompt-api-for-gemini-nano-multimodal-input &rarr; Enabled
+      </code>
+      <p class="text-zinc-600 text-[11px] mt-2">フラグ有効後、chrome://components で Optimization Guide On Device Model をダウンロードしてください。</p>
+    </div>
+
+    <!-- Debug panel -->
+    <div id="debugPanel" class="bg-zinc-900/50 border border-zinc-800 rounded-lg px-4 py-3 mb-4 text-[11px] text-zinc-500 font-mono leading-relaxed">
+      <span class="text-zinc-600">DIAG:</span> checking...
+    </div>
+
+    <!-- Drop Zone -->
+    <div
+      id="dropZone"
+      class="drop-zone relative border-2 border-dashed border-zinc-800 rounded-xl overflow-hidden cursor-pointer bg-[#111113] transition-colors min-h-[240px] flex items-center justify-center"
+    >
+      <div id="placeholder" class="text-center py-12">
+        <div class="text-4xl mb-3 opacity-30">&#x1f464;</div>
+        <p class="text-[13px] text-zinc-500 leading-loose">
+          画像をドロップ or クリックして選択<br>
+          <span class="text-[11px] text-zinc-600">PNG / JPG / WebP</span>
+        </p>
+      </div>
+      <div id="previewWrap" class="hidden w-full relative">
+        <img id="preview" class="block w-full max-h-[500px] object-contain transition-opacity" />
+        <canvas id="overlayCanvas" class="absolute top-0 left-0 pointer-events-none"></canvas>
+        <div id="scanOverlay" class="hidden absolute inset-0 bg-[#0a0a0b99] grid place-items-center">
+          <div class="scan-line"></div>
+          <div class="text-center">
+            <div class="text-[13px] text-violet-400" style="animation:blink 1s infinite">ANALYZING...</div>
+            <div id="overlayTimer" class="text-2xl font-light mt-1">0.0s</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input id="fileInput" type="file" accept="image/*" class="hidden" />
+
+    <!-- Actions -->
+    <div class="flex gap-2.5 mt-4 justify-end">
+      <button
+        id="btnReset"
+        class="hidden px-5 py-2.5 text-xs bg-transparent text-zinc-500 border border-zinc-800 rounded-md tracking-wide hover:border-zinc-600 hover:text-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >RESET</button>
+      <button
+        id="btnRun"
+        disabled
+        class="px-7 py-2.5 text-xs font-semibold rounded-md tracking-widest transition-all disabled:bg-zinc-900 disabled:text-zinc-600 disabled:cursor-not-allowed enabled:bg-violet-500 enabled:text-white enabled:hover:bg-violet-400 enabled:cursor-pointer"
+      >DETECT FACES</button>
+    </div>
+
+    <!-- Error -->
+    <div id="errorBox" class="hidden mt-4 px-4 py-3 bg-[#1a0a0a] border border-red-900 rounded-lg text-xs text-red-300"></div>
+
+    <!-- Result -->
+    <div id="resultSection" class="hidden mt-6">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] text-zinc-500 tracking-widest uppercase">Detected Faces</span>
+          <span id="resultMeta" class="text-[10px] text-zinc-700"></span>
+        </div>
+        <button
+          id="btnCopy"
+          class="px-3.5 py-1.5 text-[11px] bg-zinc-900 text-zinc-400 border border-zinc-800 rounded hover:border-zinc-600 hover:text-zinc-300 transition-colors"
+        >COPY JSON</button>
+      </div>
+      <div id="faceCards" class="space-y-3"></div>
+    </div>
+
+    <!-- Footer -->
+    <div class="mt-12 pt-4 border-t border-zinc-900 text-[11px] text-zinc-700 leading-loose">
+      <p>LanguageModel (Gemini Nano) を使用。処理はすべてローカルで実行されます。</p>
+      <p class="mt-1">画像は自動的に 1024&rarr;768&rarr;512&rarr;384px にリサイズしてリトライします。</p>
+      <p class="mt-1">顔の座標はAIによる推定のため、実際の位置と多少ずれる場合があります。</p>
+    </div>
+  </main>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const dropZone = $("#dropZone");
+    const fileInput = $("#fileInput");
+    const preview = $("#preview");
+    const previewWrap = $("#previewWrap");
+    const placeholder = $("#placeholder");
+    const overlayCanvas = $("#overlayCanvas");
+    const scanOverlay = $("#scanOverlay");
+    const overlayTimer = $("#overlayTimer");
+    const btnRun = $("#btnRun");
+    const btnReset = $("#btnReset");
+    const btnCopy = $("#btnCopy");
+    const banner = $("#banner");
+    const debugPanel = $("#debugPanel");
+    const errorBox = $("#errorBox");
+    const resultSection = $("#resultSection");
+    const faceCards = $("#faceCards");
+    const resultMeta = $("#resultMeta");
+    const statusDot = $("#statusDot");
+    const statusLabel = $("#statusLabel");
+
+    let currentFile = null;
+    let session = null;
+    let timerId = null;
+    let apiReady = false;
+    let lastJsonResult = null;
+
+    const FACE_COLORS = ["#a78bfa", "#22d3ee", "#34d399", "#fb923c", "#f472b6", "#facc15", "#60a5fa", "#e879f9"];
+
+    // ── Utility: escape text for safe DOM insertion ──
+    function esc(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.textContent;
+    }
+
+    function createEl(tag, attrs = {}, children = []) {
+      const el = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === "className") el.className = v;
+        else if (k === "textContent") el.textContent = v;
+        else if (k.startsWith("style.")) el.style[k.slice(6)] = v;
+        else el.setAttribute(k, v);
+      }
+      for (const child of children) {
+        if (typeof child === "string") el.appendChild(document.createTextNode(child));
+        else el.appendChild(child);
+      }
+      return el;
+    }
+
+    // ── API Check ──
+    const diag = (msg) => {
+      const br = document.createElement("br");
+      const text = document.createTextNode(msg);
+      debugPanel.appendChild(br);
+      debugPanel.appendChild(text);
+      console.log("[FaceDetect]", msg);
+    };
+
+    (async () => {
+      const lines = [];
+      lines.push("typeof LanguageModel = \"" + typeof LanguageModel + "\"");
+      lines.push("\"ai\" in window = " + ("ai" in window));
+      if ("ai" in window) {
+        lines.push("typeof window.ai.languageModel = \"" + typeof window.ai?.languageModel + "\"");
+      }
+      debugPanel.textContent = "";
+      const diagLabel = createEl("span", { className: "text-zinc-600", textContent: "DIAG: " });
+      debugPanel.appendChild(diagLabel);
+      debugPanel.appendChild(document.createTextNode(lines.join(" \u00b7 ")));
+
+      try {
+        if (typeof LanguageModel !== "undefined") {
+          const avail = await LanguageModel.availability();
+          diag("LanguageModel.availability() \u2192 \"" + avail + "\"");
+          if (avail === "unavailable") throw new Error("availability=" + avail);
+          setStatus(avail === "downloading" ? "downloading" : "ready");
+          apiReady = true;
+          return;
+        }
+
+        if ("ai" in window && window.ai?.languageModel) {
+          diag("Fallback: window.ai.languageModel detected");
+          window.__useLegacyAI = true;
+          const caps = await window.ai.languageModel.capabilities();
+          diag("capabilities().available \u2192 \"" + caps.available + "\"");
+          if (caps.available === "no") throw new Error("Legacy API: available=no");
+          setStatus("ready");
+          apiReady = true;
+          return;
+        }
+
+        throw new Error("No API found");
+      } catch (e) {
+        diag("ERROR: " + e.message);
+        setStatus("unavailable");
+        banner.classList.remove("hidden");
+      }
+    })();
+
+    function setStatus(s) {
+      const map = {
+        checking:    { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "CHECKING..." },
+        ready:       { bg: "bg-green-500",  shadow: "shadow-[0_0_8px_rgba(34,197,94,0.4)]",  label: "API READY" },
+        downloading: { bg: "bg-yellow-500", shadow: "shadow-[0_0_8px_rgba(234,179,8,0.4)]",  label: "DOWNLOADING MODEL..." },
+        unavailable: { bg: "bg-red-500",    shadow: "shadow-[0_0_8px_rgba(239,68,68,0.4)]",  label: "UNAVAILABLE" },
+      };
+      const m = map[s] || map.checking;
+      statusDot.className = "w-2 h-2 rounded-full " + m.bg + " " + m.shadow;
+      statusLabel.textContent = m.label;
+    }
+
+    // ── File Handling ──
+    dropZone.addEventListener("click", () => { if (!btnRun.disabled || !currentFile) fileInput.click(); });
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.style.borderColor = "#a78bfa"; });
+    dropZone.addEventListener("dragleave", () => { dropZone.style.borderColor = ""; });
+    dropZone.addEventListener("drop", (e) => { e.preventDefault(); dropZone.style.borderColor = ""; loadFile(e.dataTransfer?.files?.[0]); });
+    fileInput.addEventListener("change", () => loadFile(fileInput.files?.[0]));
+
+    function loadFile(file) {
+      if (!file || !file.type.startsWith("image/")) return;
+      currentFile = file;
+      hideError();
+      resultSection.classList.add("hidden");
+      clearCanvas();
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        preview.src = e.target.result;
+        preview.style.opacity = "1";
+        previewWrap.classList.remove("hidden");
+        placeholder.classList.add("hidden");
+        btnReset.classList.remove("hidden");
+        btnRun.disabled = !apiReady;
+        btnRun.textContent = "DETECT FACES";
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // ── Canvas ──
+    function clearCanvas() {
+      const ctx = overlayCanvas.getContext("2d");
+      overlayCanvas.width = 0;
+      overlayCanvas.height = 0;
+    }
+
+    function drawBoundingBoxes(faces) {
+      const img = preview;
+      const rect = img.getBoundingClientRect();
+      const wrapRect = previewWrap.getBoundingClientRect();
+
+      overlayCanvas.width = rect.width;
+      overlayCanvas.height = rect.height;
+      overlayCanvas.style.left = (rect.left - wrapRect.left) + "px";
+      overlayCanvas.style.top = (rect.top - wrapRect.top) + "px";
+      overlayCanvas.style.width = rect.width + "px";
+      overlayCanvas.style.height = rect.height + "px";
+
+      const ctx = overlayCanvas.getContext("2d");
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+      faces.forEach((face, i) => {
+        const color = FACE_COLORS[i % FACE_COLORS.length];
+        const x = face.x * rect.width;
+        const y = face.y * rect.height;
+        const w = face.w * rect.width;
+        const h = face.h * rect.height;
+
+        // 半透明背景
+        ctx.fillStyle = color + "15";
+        ctx.fillRect(x, y, w, h);
+
+        // 枠線
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+
+        // ラベル背景
+        const label = "#" + (i + 1);
+        ctx.font = "bold 12px JetBrains Mono, monospace";
+        const textWidth = ctx.measureText(label).width;
+        const labelH = 20;
+        const labelW = textWidth + 12;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y - labelH, labelW, labelH);
+
+        // ラベルテキスト
+        ctx.fillStyle = "#0a0a0b";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, x + 6, y - labelH / 2);
+
+        // コーナーマーク
+        const cornerLen = Math.min(12, w * 0.2, h * 0.2);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x, y + cornerLen); ctx.lineTo(x, y); ctx.lineTo(x + cornerLen, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerLen); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, y + h - cornerLen); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerLen, y + h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke();
+      });
+    }
+
+    // ── Resize ──
+    function resizeImage(file, maxDim = 1024, quality = 0.8) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width: w, height: h } = img;
+          if (w > maxDim || h > maxDim) {
+            const scale = maxDim / Math.max(w, h);
+            w = Math.round(w * scale);
+            h = Math.round(h * scale);
+          }
+          const c = document.createElement("canvas");
+          c.width = w; c.height = h;
+          c.getContext("2d").drawImage(img, 0, 0, w, h);
+          c.toBlob((blob) => {
+            if (!blob) return reject(new Error("Canvas toBlob failed"));
+            const resized = new File([blob], file.name, { type: "image/jpeg" });
+            diag("Resized: " + img.width + "x" + img.height + " \u2192 " + w + "x" + h + " (" + (blob.size / 1024).toFixed(0) + "KB)");
+            resolve(resized);
+          }, "image/jpeg", quality);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+      });
+    }
+
+    // ── Detection ──
+    btnRun.addEventListener("click", runDetect);
+
+    const SYSTEM_PROMPT = "You are a precise face detection and analysis engine. Detect ALL human faces in the provided image.\n\nFor each face, return a JSON array. Each element must have:\n- \"x\": left edge as ratio 0-1 of image width\n- \"y\": top edge as ratio 0-1 of image height\n- \"w\": width as ratio 0-1 of image width\n- \"h\": height as ratio 0-1 of image height\n- \"age\": estimated age range in Japanese (e.g. \"20代前半\", \"30代後半\")\n- \"gender\": gender in Japanese (\"男性\" or \"女性\")\n- \"expression\": facial expression in Japanese (e.g. \"笑顔\", \"真顔\", \"驚き\")\n- \"features\": array of notable features in Japanese (e.g. [\"メガネ\", \"ヒゲ\", \"帽子\"])\n\nOutput ONLY valid JSON array. No markdown, no explanation, no code fences. If no faces found, output [].";
+
+    const USER_PROMPT = "この画像に写っているすべての人の顔を検出し、それぞれの位置と属性を分析してください。\n\n出力は以下の形式の JSON 配列のみを返してください（コードブロックやマークダウンは不要）:\n[{\"x\":0.1,\"y\":0.2,\"w\":0.15,\"h\":0.2,\"age\":\"30代\",\"gender\":\"男性\",\"expression\":\"笑顔\",\"features\":[\"メガネ\"]}]\n\n顔が見つからない場合は [] を返してください。";
+
+    async function runDetect() {
+      if (!currentFile) return;
+      btnRun.disabled = true;
+      btnReset.disabled = true;
+      hideError();
+      resultSection.classList.add("hidden");
+      clearCanvas();
+
+      scanOverlay.classList.remove("hidden");
+      preview.style.opacity = "0.5";
+      const start = Date.now();
+      timerId = setInterval(() => {
+        overlayTimer.textContent = ((Date.now() - start) / 1000).toFixed(1) + "s";
+      }, 100);
+
+      const elapsed = () => ((Date.now() - start) / 1000).toFixed(1);
+
+      try {
+        if (session) { session.destroy(); session = null; }
+
+        const createSession = async () => {
+          if (window.__useLegacyAI) {
+            return await window.ai.languageModel.create({ systemPrompt: SYSTEM_PROMPT });
+          }
+          return await LanguageModel.create({
+            initialPrompts: [{ role: "system", content: SYSTEM_PROMPT }],
+            expectedInputs: [{ type: "image" }],
+          });
+        };
+
+        const maxDims = [1024, 768, 512, 384];
+        let response = null;
+
+        for (const maxDim of maxDims) {
+          try {
+            const resizedFile = await resizeImage(currentFile, maxDim);
+            if (session) session.destroy();
+            session = await createSession();
+
+            const maxTok = session.maxTokens ?? session.contextWindow ?? "?";
+            const left = session.tokensLeft ?? "?";
+            diag("Session: maxTokens=" + maxTok + ", tokensLeft=" + left);
+
+            const prompt = [
+              { role: "user", content: [
+                { type: "text",  value: USER_PROMPT },
+                { type: "image", value: resizedFile },
+              ]}
+            ];
+
+            response = await session.prompt(prompt);
+            diag("Success at maxDim=" + maxDim);
+            break;
+          } catch (e) {
+            diag("maxDim=" + maxDim + " failed: " + e.message);
+            if (e.message?.toLowerCase().includes("too large") ||
+                e.message?.toLowerCase().includes("quota") ||
+                e.message?.toLowerCase().includes("token") ||
+                e.name === "QuotaExceededError") {
+              continue;
+            }
+            if (e.message?.toLowerCase().includes("type") ||
+                e.message?.toLowerCase().includes("image") ||
+                e.message?.toLowerCase().includes("support")) {
+              try {
+                diag("Trying legacy multimodal format...");
+                if (session) session.destroy();
+                session = await createSession();
+                const resizedFile2 = await resizeImage(currentFile, maxDim);
+                response = await session.prompt([
+                  { type: "text",  content: USER_PROMPT },
+                  { type: "image", content: resizedFile2 },
+                ]);
+                break;
+              } catch (e2) {
+                diag("Legacy format also failed: " + e2.message);
+              }
+            }
+            throw e;
+          }
+        }
+
+        if (!response) {
+          throw new Error("画像が大きすぎます。384px以下にリサイズしても収まりませんでした。");
+        }
+
+        diag("Raw response: " + response.substring(0, 200) + "...");
+
+        let faces = parseJSON(response);
+
+        // JSON パース失敗時リトライ
+        if (!faces) {
+          diag("JSON parse failed, retrying with stricter prompt...");
+          const retryResponse = await session.prompt([
+            { role: "user", content: [
+              { type: "text", value: "前の回答が正しい JSON ではありませんでした。有効な JSON 配列のみを出力してください。マークダウンやコードブロックは一切不要です。" },
+            ]}
+          ]);
+          diag("Retry response: " + retryResponse.substring(0, 200) + "...");
+          faces = parseJSON(retryResponse);
+        }
+
+        if (!faces) {
+          throw new Error("AI のレスポンスを JSON としてパースできませんでした。");
+        }
+
+        clearInterval(timerId);
+        lastJsonResult = faces;
+        showResult(faces, elapsed());
+      } catch (e) {
+        clearInterval(timerId);
+        showError("検出失敗: " + e.message);
+      } finally {
+        scanOverlay.classList.add("hidden");
+        preview.style.opacity = "1";
+        btnRun.disabled = false;
+        btnReset.disabled = false;
+        btnRun.textContent = "DETECT FACES";
+      }
+    }
+
+    function parseJSON(text) {
+      try {
+        let cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim();
+        const match = cleaned.match(/\[[\s\S]*\]/);
+        if (match) cleaned = match[0];
+        const parsed = JSON.parse(cleaned);
+        if (!Array.isArray(parsed)) return null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    }
+
+    // ── Results (DOM-based, no innerHTML with untrusted data) ──
+    function showResult(faces, sec) {
+      resultMeta.textContent = faces.length + " face" + (faces.length !== 1 ? "s" : "") + " \u00b7 " + sec + "s";
+      faceCards.replaceChildren();
+
+      if (faces.length === 0) {
+        const empty = createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg px-5 py-8 text-center" }, [
+          createEl("p", { className: "text-zinc-500 text-sm", textContent: "顔が検出されませんでした" }),
+        ]);
+        faceCards.appendChild(empty);
+        resultSection.classList.remove("hidden");
+        return;
+      }
+
+      requestAnimationFrame(() => drawBoundingBoxes(faces));
+
+      faces.forEach((face, i) => {
+        const color = FACE_COLORS[i % FACE_COLORS.length];
+
+        // Feature tags
+        const featureTags = (face.features || []).map(f => {
+          const tag = createEl("span", { textContent: esc(String(f)) });
+          tag.className = "inline-block px-2 py-0.5 rounded text-[11px] border";
+          tag.style.borderColor = color + "40";
+          tag.style.color = color;
+          tag.style.background = color + "10";
+          return tag;
+        });
+
+        const featureWrap = createEl("div", { className: "mt-3 flex flex-wrap gap-1.5" }, featureTags);
+
+        // Attribute grid
+        const grid = createEl("div", { className: "grid grid-cols-3 gap-y-2.5 gap-x-6 text-[13px]" }, [
+          createAttrCell("Age", face.age),
+          createAttrCell("Gender", face.gender),
+          createAttrCell("Expression", face.expression),
+        ]);
+
+        // Label
+        const label = createEl("div", { className: "flex items-center gap-2 mb-3" }, [
+          createEl("span", { className: "text-xs font-semibold tracking-widest", textContent: "FACE #" + (i + 1) }),
+        ]);
+        label.firstChild.style.color = color;
+
+        // Card body
+        const body = createEl("div", { className: "flex-1 px-5 py-4" }, [label, grid]);
+        if (featureTags.length > 0) body.appendChild(featureWrap);
+
+        // Accent bar
+        const bar = createEl("div", { className: "w-1.5 shrink-0" });
+        bar.style.background = color;
+
+        // Card
+        const card = createEl("div", { className: "bg-[#111113] border border-zinc-800 rounded-lg overflow-hidden flex" }, [bar, body]);
+        faceCards.appendChild(card);
+      });
+
+      resultSection.classList.remove("hidden");
+    }
+
+    function createAttrCell(labelText, value) {
+      return createEl("div", {}, [
+        createEl("span", { className: "text-zinc-600 text-[11px] tracking-wide uppercase block mb-0.5", textContent: labelText }),
+        createEl("span", { className: "text-zinc-200", textContent: value ? esc(String(value)) : "\u2014" }),
+      ]);
+    }
+
+    // リサイズ時にバウンディングボックスを再描画
+    window.addEventListener("resize", () => {
+      if (lastJsonResult && lastJsonResult.length > 0) {
+        requestAnimationFrame(() => drawBoundingBoxes(lastJsonResult));
+      }
+    });
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.classList.remove("hidden");
+    }
+    function hideError() { errorBox.classList.add("hidden"); }
+
+    // ── Copy ──
+    btnCopy.addEventListener("click", async () => {
+      if (!lastJsonResult) return;
+      await navigator.clipboard.writeText(JSON.stringify(lastJsonResult, null, 2));
+      btnCopy.textContent = "COPIED \u2713";
+      btnCopy.classList.add("!border-green-600/30", "!text-green-400", "!bg-green-500/10");
+      setTimeout(() => {
+        btnCopy.textContent = "COPY JSON";
+        btnCopy.classList.remove("!border-green-600/30", "!text-green-400", "!bg-green-500/10");
+      }, 1500);
+    });
+
+    // ── Reset ──
+    btnReset.addEventListener("click", () => {
+      currentFile = null;
+      lastJsonResult = null;
+      fileInput.value = "";
+      preview.src = "";
+      previewWrap.classList.add("hidden");
+      placeholder.classList.remove("hidden");
+      scanOverlay.classList.add("hidden");
+      clearCanvas();
+      btnReset.classList.add("hidden");
+      btnRun.disabled = true;
+      btnRun.textContent = "DETECT FACES";
+      hideError();
+      resultSection.classList.add("hidden");
+      if (session) { session.destroy(); session = null; }
+    });
+  </script>
+</body>
+</html>
