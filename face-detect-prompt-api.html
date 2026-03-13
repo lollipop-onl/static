@@ -320,10 +320,11 @@
 
       faces.forEach((face, i) => {
         const color = FACE_COLORS[i % FACE_COLORS.length];
-        const x = rendered.x + face.x * rendered.w;
-        const y = rendered.y + face.y * rendered.h;
         const w = face.w * rendered.w;
         const h = face.h * rendered.h;
+        // AI often returns center coords — draw from top-left
+        const x = rendered.x + face.x * rendered.w - w / 2;
+        const y = rendered.y + face.y * rendered.h - h / 2;
 
         // 半透明背景
         ctx.fillStyle = color + "15";
